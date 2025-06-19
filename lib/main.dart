@@ -2,6 +2,7 @@
 
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -242,6 +243,8 @@ class WeatherAPIState with ChangeNotifier {
       final tempResponse = await http.get(surl);
       final dailyWeatherResponse = await http.get(dailyWeatherUrl);
 
+      debugPrint(tempResponse.statusCode.toString());
+
       if (dailyWeatherResponse.statusCode == 200) {
         final dailyJsonData = jsonDecode(dailyWeatherResponse.body);
         maxTemp = dailyJsonData["daily"]["temperature_2m_max"][0]
@@ -250,6 +253,10 @@ class WeatherAPIState with ChangeNotifier {
         minTemp = dailyJsonData["daily"]["temperature_2m_min"][0]
             .toString()
             .split(".")[0];
+      } else {
+        if (dailyWeatherResponse.statusCode == 429) {
+          emitEvent({"error": "Problema al verificar la conexión."});
+        }
       }
 
       if (tempResponse.statusCode == 200) {
