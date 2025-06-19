@@ -429,7 +429,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 TextButton(
                   onPressed: () {
                     Navigator.pop(context);
-                    update.downloadAndInstallApk();
+                    update.downloadAndInstallApkHTTP();
                   },
                   child: Text("Actualizar"),
                 ),

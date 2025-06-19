@@ -1,19 +1,20 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:isolate';
-import 'dart:ui';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter_downloader/flutter_downloader.dart';
-import 'package:open_filex/open_filex.dart';
+import "dart:async";
+import "dart:convert";
+import "dart:io";
+import "dart:isolate";
+import "dart:ui";
+import "package:flutter/material.dart";
+import "package:http/http.dart" as http;
+import "package:package_info_plus/package_info_plus.dart";
+import "package:path_provider/path_provider.dart";
+import "package:permission_handler/permission_handler.dart";
+import "package:flutter_downloader/flutter_downloader.dart";
+import "package:open_filex/open_filex.dart";
 
-@pragma('vm:entry-point')
+@pragma("vm:entry-point")
 void downloadCallback(String id, int status, int progress) {
   final SendPort? send = IsolateNameServer.lookupPortByName(
-    'downloader_send_port',
+    "downloader_send_port",
   );
   if (send != null) {
     send.send([id, status, progress]);
@@ -58,10 +59,10 @@ class UpdateScreenState extends State<UpdateScreen> {
       );
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        String latestVersion = data['version'];
-        String apkUrl = data['apk_url'];
+        String latestVersion = data["version"];
+        String apkUrl = data["apk_url"];
         globalApkUrl = apkUrl;
-        bool forceUpdate = data['force_update'];
+        bool forceUpdate = data["force_update"];
 
         // Comparar versiones
         if (latestVersion != currentVersion) {
@@ -96,18 +97,62 @@ class UpdateScreenState extends State<UpdateScreen> {
 
       // Obtener el directorio de descargas
       final directory = await getExternalStorageDirectory();
-      final savedDir = directory?.path;
-      final filePath = '$savedDir/app-release.apk';
-      _installApk(filePath);
+      final savedDir = directory!.path;
+      final filePath = "$savedDir/app-release.apk";
 
       // Descargar el APK
-      await FlutterDownloader.enqueue(
+      var donwload = await FlutterDownloader.enqueue(
         url: apkUrl,
-        savedDir: savedDir!,
-        fileName: 'app-release.apk',
+        savedDir: savedDir,
+        fileName: "app-release.apk",
         showNotification: true,
         openFileFromNotification: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; FlutterDownloader/1.0)',
+          'Accept': 'application/vnd.android.package-archive',
+        },
       );
+      if (donwload!.isNotEmpty) {
+        _installApk(filePath);
+      }
+    } else {
+      _status = "Permisos de almacenamiento denegados";
+      debugPrint(_status);
+    }
+  }
+
+  Future<void> downloadAndInstallApkHTTP() async {
+    var apkUrl = globalApkUrl;
+    // Solicitar permisos de almacenamiento
+    var storagePermission = await Permission.manageExternalStorage.request();
+    if (storagePermission.isGranted) {
+      _status = "Descargando actualización...";
+
+      try {
+        final url = Uri.parse(apkUrl);
+        final response = await http.get(
+          url,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; FlutterDownloader/1.0)',
+            'Accept': 'application/vnd.android.package-archive',
+          },
+        );
+        debugPrint("${url}");
+
+        if (response.statusCode == 200) {
+          // Obtener el directorio de descargas
+          final directory = await getExternalStorageDirectory();
+          final savedDir = directory!.path;
+          final file = File("$savedDir/app-release.apk");
+          await file.writeAsBytes(response.bodyBytes);
+          if (await file.exists()) {
+            _installApk(file.path);
+          }
+        }
+      } catch (e) {
+        _status = "Error al descargar la actualización";
+        debugPrint(_status);
+      }
     } else {
       _status = "Permisos de almacenamiento denegados";
       debugPrint(_status);
@@ -129,7 +174,7 @@ class UpdateScreenState extends State<UpdateScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Actualización OTA')),
+      appBar: AppBar(title: Text("Actualización OTA")),
       body: Center(child: Text(_status)),
     );
   }
