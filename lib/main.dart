@@ -1,22 +1,15 @@
-// ignore_for_file: library_private_types_in_public_api, prefer_typing_uninitialized_variables
-
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
-
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'dart:async';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
+import 'package:provider/provider.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
 import 'update_handler.dart';
+import 'metar_weather_api.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,8 +26,11 @@ class MyApp extends StatelessWidget {
   // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (context) => WeatherAPIState(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => WeatherService()),
+        ChangeNotifierProvider(create: (_) => Checkers()),
+      ],
       child: MaterialApp(
         title: "zeroweather",
         theme: ThemeData(
@@ -48,10 +44,29 @@ class MyApp extends StatelessWidget {
         home: MyHomePage(),
       ),
     );
+
+    //return ChangeNotifierProvider(
+    //  create: (context) => WeatherAPIState(),
+    //  child: MaterialApp(
+    //    title: "zeroweather",
+    //    theme: ThemeData(
+    //      textTheme: GoogleFonts.kanitTextTheme(),
+    //      useMaterial3: true,
+    //      //podemos cambiar el color de los temas de la app
+    //      colorScheme: ColorScheme.fromSeed(
+    //        seedColor: const Color.fromARGB(255, 62, 126, 134),
+    //      ),
+    //    ),
+    //    home: MyHomePage(),
+    //  ),
+    //);
   }
 }
 
-class WeatherAPIState with ChangeNotifier {
+//Checker para permisos de ubicación e internet
+class Checkers with ChangeNotifier {
+  var appPermission = true;
+
   final _eventController = StreamController<Map>.broadcast();
   Stream<Map> get eventStream => _eventController.stream;
 
@@ -63,56 +78,6 @@ class WeatherAPIState with ChangeNotifier {
   void dispose() {
     _eventController.close();
     super.dispose();
-  }
-
-  final _cloudDescriptionPoints = {
-    0: {"despejado": Icons.wb_sunny},
-    15: {"mayormente despejado": Icons.wb_sunny},
-    40: {"parcialmente nublado": Icons.wb_cloudy},
-    65: {"mayormente nublado": Icons.cloud},
-    85: {"muy nublado": Icons.cloud_queue},
-    100: {"completamente nublado": Icons.cloud},
-  };
-  var cloudDescription = {};
-
-  var temp = "";
-  var maxTemp = "";
-  var minTemp = "";
-  var globalMap = {};
-  var siteName = "";
-  double? latitude = 0.0;
-  double? longitude = 0.0;
-  Position? position;
-
-  var time = "";
-  double? humidity;
-  var aparentTemp = "";
-  var wind = "";
-  var rain = "";
-  var pressure = "";
-  var precipitation = "";
-  var cloudCover = 0.0;
-
-  var tempByHours = <double>[];
-  var hours = <int>[];
-  var dates = <DateTime>[];
-
-  var appPermission = true;
-  Timer? _timer;
-
-  void startWeatherTimmer() async {
-    _timer = Timer.periodic(Duration(seconds: 3), (timmer) async {
-      await getWeather();
-      await getTempByHour();
-    });
-    debugPrint("$_timer");
-  }
-
-  void startLocationTimmer() async {
-    _timer = Timer.periodic(Duration(minutes: 2), (timmer) async {
-      await getPrecisePosition();
-    });
-    debugPrint("$_timer");
   }
 
   Future<void> checkPermissions() async {
@@ -146,222 +111,6 @@ class WeatherAPIState with ChangeNotifier {
     }
   }
 
-  Future<void> updateSiteName(Position position) async {
-    String safeSiteName = "Ubicación desconocida.";
-    try {
-      if (latitude != 0.0 && longitude != 0.0) {
-        List<Placemark> placemarks = await placemarkFromCoordinates(
-          latitude!,
-          longitude!,
-        );
-        if (placemarks.isNotEmpty) {
-          safeSiteName =
-              placemarks.first.locality ??
-              placemarks.first.subLocality ??
-              "Ubicación desconocida.";
-        }
-      }
-      globalMap = {
-        "position": position,
-        "latitude": latitude,
-        "longitude": longitude,
-        "safeSiteName": safeSiteName,
-      };
-    } catch (e) {
-      debugPrint("Error al obtener el clima: $e");
-    }
-  }
-
-  Future<void> getPrecisePosition() async {
-    Position? position = await Geolocator.getLastKnownPosition();
-    final prefs = await SharedPreferences.getInstance();
-    debugPrint("GetPrecisePosition Iniciada.");
-    try {
-      position ??= await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-      );
-
-      if (position.latitude == 0.0 && position.longitude == 0.0) {
-        latitude = prefs.getDouble('cached_latitude');
-        longitude = prefs.getDouble('cached_longitude');
-      } else {
-        latitude = position.latitude;
-        longitude = position.longitude;
-        await prefs.setDouble('cached_latitude', position.latitude);
-        await prefs.setDouble('cached_longitude', position.longitude);
-      }
-    } catch (e) {
-      debugPrint("Error al obtener la ubicación: $e");
-      latitude = 0.0;
-      longitude = 0.0;
-    }
-    if (position != null) {
-      await updateSiteName(position);
-    }
-    notifyListeners();
-  }
-
-  Future<void> getPosition() async {
-    try {
-      Position? position = await Geolocator.getLastKnownPosition();
-      final prefs = await SharedPreferences.getInstance();
-      debugPrint("GetPosition Iniciada.");
-      position ??= await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.low,
-      );
-
-      if (position.latitude == 0.0 && position.longitude == 0.0) {
-        latitude = prefs.getDouble('cached_latitude');
-        longitude = prefs.getDouble('cached_longitude');
-      } else {
-        latitude = position.latitude;
-        longitude = position.longitude;
-        await prefs.setDouble('cached_latitude', position.latitude);
-        await prefs.setDouble('cached_longitude', position.longitude);
-      }
-
-      await updateSiteName(position);
-    } catch (e) {
-      debugPrint("Error al obtener la ubicación: $e");
-      latitude = 0.0;
-      longitude = 0.0;
-    }
-
-    notifyListeners();
-  }
-
-  Future<void> getTemp() async {
-    var surl = Uri.parse(
-      "https://api.open-meteo.com/v1/forecast?latitude=${globalMap["latitude"]}&longitude=${globalMap["longitude"]}&current=temperature_2m,apparent_temperature",
-    );
-
-    var dailyWeatherUrl = Uri.parse(
-      "https://api.open-meteo.com/v1/forecast?latitude=${globalMap["latitude"]}&longitude=${globalMap["longitude"]}&daily=temperature_2m_max,temperature_2m_min",
-    );
-
-    try {
-      final tempResponse = await http.get(surl);
-      final dailyWeatherResponse = await http.get(dailyWeatherUrl);
-
-      debugPrint(tempResponse.statusCode.toString());
-
-      if (dailyWeatherResponse.statusCode == 200) {
-        final dailyJsonData = jsonDecode(dailyWeatherResponse.body);
-        maxTemp = dailyJsonData["daily"]["temperature_2m_max"][0]
-            .toString()
-            .split(".")[0];
-        minTemp = dailyJsonData["daily"]["temperature_2m_min"][0]
-            .toString()
-            .split(".")[0];
-      } else {
-        if (dailyWeatherResponse.statusCode == 429) {
-          emitEvent({"error": "Problema al verificar la conexión."});
-        }
-      }
-
-      if (tempResponse.statusCode == 200) {
-        final temoJsonData = jsonDecode(tempResponse.body);
-        temp = temoJsonData["current"]["temperature_2m"].toString();
-        aparentTemp = temoJsonData["current"]["apparent_temperature"]
-            .toString();
-        siteName = globalMap["safeSiteName"];
-      }
-    } catch (e) {
-      debugPrint("Error: $e");
-    }
-    notifyListeners();
-  }
-
-  Future<void> getWeather() async {
-    final url = Uri.parse(
-      "https://api.open-meteo.com/v1/forecast?latitude=${globalMap["latitude"]}&longitude=${globalMap["longitude"]}&current=relative_humidity_2m,is_day,rain,precipitation,showers,snowfall,wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,surface_pressure,cloud_cover,weather_code",
-    );
-
-    try {
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        final currentTime = data["current"]["time"];
-        final currentHumidity = data["current"]["relative_humidity_2m"];
-        final currentRain = data["current"]["rain"];
-        final currentPrecipitation = data["current"]["precipitation"];
-        // ignore: unused_local_variable
-        // final currentShowers = data["current"]["showers"];
-        // ignore: unused_local_variable
-        // final currentSnowfall = data["current"]["snowfall"];
-        final currentWindSpeed = data["current"]["wind_speed_10m"];
-        // ignore: unused_local_variable
-        // final currentWindDirection = data["current"]["wind_direction_10m"];
-        // ignore: unused_local_variable
-        // final currentWindGusts = data["current"]["wind_gusts_10m"];
-        final currentPressure = data["current"]["pressure_msl"];
-        // ignore: unused_local_variable
-        // final currentSurfacePressure = data["current"]["surface_pressure"];
-        // ignore: unused_local_variable
-        cloudCover = data["current"]["cloud_cover"] / 100 * 100;
-        // ignore: unused_local_variable
-        for (var point in _cloudDescriptionPoints.entries) {
-          if (point.key <= cloudCover) {
-            cloudDescription = point.value;
-          }
-        }
-        // ignore: unused_local_variable
-        // final currentWeatherCode = data["current"]["weather_code"];
-
-        wind = currentWindSpeed.toString();
-        rain = currentRain.toString();
-        pressure = currentPressure.toString();
-        precipitation = currentPrecipitation.toString();
-        humidity = currentHumidity * 100 / 100;
-        time = currentTime.toString();
-
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint("Error: $e");
-    }
-  }
-
-  Future<void> getTempByHour() async {
-    http.Response? response;
-
-    final url = Uri.parse(
-      "https://api.open-meteo.com/v1/forecast?latitude=${globalMap["latitude"]}&longitude=${globalMap["longitude"]}&hourly=temperature_2m",
-    );
-
-    try {
-      response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final hourlyTemp = data["hourly"]["temperature_2m"];
-        final hourlyTime = data["hourly"]["time"];
-
-        var now = DateTime.now().toLocal();
-        final limit = now.add(Duration(hours: 24));
-
-        for (var i in hourlyTime) {
-          var parsed = DateTime.parse(i).toLocal();
-          if (parsed.isAfter(now) && parsed.isBefore(limit)) {
-            var test = parsed.hour;
-            if (!hours.contains(test)) {
-              hours.add(test);
-              dates.add(parsed);
-            }
-          }
-        }
-        var hourLenght = hours.length;
-        var parsedTemp = hourlyTemp.sublist(0, hourLenght);
-
-        tempByHours = List<double>.from(parsedTemp);
-      }
-    } catch (e) {
-      debugPrint("Error: $e");
-    }
-    notifyListeners();
-  }
-
   Future<void> checkInternet() async {
     try {
       final result = await InternetAddress.lookup(
@@ -383,15 +132,6 @@ class WeatherAPIState with ChangeNotifier {
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
@@ -401,71 +141,75 @@ class _MyHomePageState extends State<MyHomePage> {
   void initState() {
     super.initState();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final weather = context.read<WeatherAPIState>();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initAsyncStuff();
+    });
+  }
 
-      weather.checkPermissions().then((_) async {
-        await weather.getPosition().then((_) {
-          weather.checkInternet();
-          weather.getTemp();
-          weather.getWeather();
-          weather.getTempByHour();
-          weather.startWeatherTimmer();
-          weather.startLocationTimmer();
+  Future<void> _initAsyncStuff() async {
+    final checkers = context.read<Checkers>();
+    final newWeatherService = context.read<WeatherService>();
+    checkers.checkPermissions().then((_) {
+      checkers.checkInternet();
+      newWeatherService.getPosition().then((_) {
+        newWeatherService.loadStation().then((_) {
+          newWeatherService.findNerbyStation();
+          newWeatherService.fetchMetarData();
+          newWeatherService.getForecast();
         });
       });
-      final update = UpdateScreenState();
-      update.checkForUpdates();
+    });
+    final update = UpdateScreenState();
+    update.checkForUpdates();
 
-      update.eventStream.listen((event) {
-        if (event.keys.first == "show_update_dialog") {
-          showDialog(
-            context: context,
-            barrierDismissible: !event.values.first["forceUpdate"],
-            builder: (context) => AlertDialog(
-              title: Text('Nueva versión disponible'),
-              content: Text(
-                "Versión ${event.values.first["latestVersion"]} disponible. ¿Deseas actualizar?",
+    update.eventStream.listen((event) {
+      if (event.keys.first == "show_update_dialog") {
+        showDialog(
+          context: context,
+          barrierDismissible: !event.values.first["forceUpdate"],
+          builder: (context) => AlertDialog(
+            title: Text('Nueva versión disponible'),
+            content: Text(
+              "Versión ${event.values.first["latestVersion"]} disponible. ¿Deseas actualizar?",
+            ),
+            actions: [
+              if (!event.values.first["forceUpdate"])
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text("Más tarde"),
+                ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  update.downloadAndInstallApkHTTP();
+                },
+                child: Text("Actualizar"),
               ),
-              actions: [
-                if (!event.values.first["forceUpdate"])
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text("Más tarde"),
-                  ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    update.downloadAndInstallApkHTTP();
-                  },
-                  child: Text("Actualizar"),
-                ),
-              ],
-            ),
-          );
-        }
-      });
+            ],
+          ),
+        );
+      }
+    });
 
-      weather.eventStream.listen((event) {
-        if (event.entries.isNotEmpty) {
-          showDialog(
-            // ignore: use_build_context_synchronously
-            context: context,
-            builder: (_) => AlertDialog(
-              title: Text("Error"),
-              content: Text("${event.values.first}"),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    SystemNavigator.pop();
-                  },
-                  child: Text("Salir"),
-                ),
-              ],
-            ),
-          );
-        }
-      });
+    checkers.eventStream.listen((event) {
+      if (event.entries.isNotEmpty) {
+        showDialog(
+          // ignore: use_build_context_synchronously
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text("Error"),
+            content: Text("${event.values.first}"),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  SystemNavigator.pop();
+                },
+                child: Text("Salir"),
+              ),
+            ],
+          ),
+        );
+      }
     });
   }
 
@@ -477,24 +221,25 @@ class _MyHomePageState extends State<MyHomePage> {
     // The Flutter framework has been optimized to make rerunning build methods
     // fast, so that you can just rebuild anything that needs updating rather
     // than having to individually change instances of widgets.
-    var weatherState = context.watch<WeatherAPIState>();
-    var separatedTemp = weatherState.temp.split(".");
+    var newWeatherApi = context.watch<WeatherService>();
+    var temp = newWeatherApi.metarCacheData!["temperature"].toString();
+    var separatedTemp = temp.split(".");
 
     var mainColor = Color.fromARGB(255, 10, 91, 119);
     var backgroundColor = Color.fromARGB(255, 40, 159, 208);
     var titleTextColor = Color.fromARGB(255, 244, 240, 88);
     var secondaryColor = Color.fromARGB(255, 2, 1, 34);
 
-    var tempByHours = weatherState.tempByHours;
-    var hours = weatherState.hours;
-    var dates = weatherState.dates;
+    var tempByHours = newWeatherApi.forecastCachedData!["tempByHours"];
+    var hours = newWeatherApi.forecastCachedData!["tempHours"];
+    var dates = newWeatherApi.forecastCachedData!["dates"];
 
     return Scaffold(
       backgroundColor: backgroundColor,
       body: Stack(
         children: [
           Positioned.fill(child: MovingCloudsBackground()),
-          weatherState.temp.isEmpty
+          newWeatherApi.metarCacheData!.isEmpty
               ? StartPage(mainColor: mainColor, secondaryColor: secondaryColor)
               : RefreshIndicator(
                   color: titleTextColor,
@@ -502,11 +247,10 @@ class _MyHomePageState extends State<MyHomePage> {
                   displacement: 50.0,
                   edgeOffset: 0.0,
                   onRefresh: () async {
-                    await weatherState.getPrecisePosition().then((_) {
-                      weatherState.checkInternet();
-                      weatherState.getTemp();
-                      weatherState.getWeather();
-                      weatherState.getTempByHour();
+                    await newWeatherApi.getPrecisePosition().then((_) {
+                      newWeatherApi.findNerbyStation();
+                      newWeatherApi.fetchMetarData();
+                      newWeatherApi.getForecast();
                     });
                   },
                   child: CustomScrollView(
@@ -525,14 +269,20 @@ class _MyHomePageState extends State<MyHomePage> {
                                 // La linea de "weatherState.temp.isEmpty ? const CircularProgressIndicator(): Row" es como si hicieramos un "widget = CircularProgressIndicator() if temp == "" else Column(...)" en python. es un if de una sola linea.
                                 children: [
                                   IndexPage(
-                                    weatherState: weatherState,
+                                    weatherState: newWeatherApi,
                                     mainColor: mainColor,
                                     separatedTemp: separatedTemp,
                                     secondaryColor: secondaryColor,
-                                    hours: hours,
-                                    tempByHours: tempByHours,
+                                    hours: (hours as List<dynamic>)
+                                        .map((e) => int.parse(e))
+                                        .toList(),
+                                    tempByHours: (tempByHours as List<dynamic>)
+                                        .map((e) => e as double)
+                                        .toList(),
                                     titleTextColor: titleTextColor,
-                                    dates: dates,
+                                    dates: (dates as List<dynamic>)
+                                        .map((e) => DateTime.parse(e))
+                                        .toList(),
                                   ),
                                 ],
                               ),
@@ -562,7 +312,7 @@ class IndexPage extends StatelessWidget {
     required this.dates,
   });
 
-  final WeatherAPIState weatherState;
+  final WeatherService weatherState;
   final Color mainColor;
   final Color secondaryColor;
   final List<String> separatedTemp;
@@ -675,10 +425,10 @@ class IndexPage extends StatelessWidget {
                     );
                   },
                   child: Padding(
-                    key: ValueKey(separatedTemp[1]),
+                    key: ValueKey(separatedTemp.isEmpty ? separatedTemp[1] : 0),
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
-                      separatedTemp[1],
+                      "${separatedTemp.isEmpty ? separatedTemp[1] : 0}",
                       style: GoogleFonts.kanit(
                         fontSize: 90,
                         color: titleTextColor,
@@ -687,7 +437,6 @@ class IndexPage extends StatelessWidget {
                     ),
                   ),
                 ),
-
                 Text(
                   "C°",
                   style: GoogleFonts.kanit(
@@ -701,7 +450,7 @@ class IndexPage extends StatelessWidget {
           ],
         ),
         Text(
-          "↑${weatherState.maxTemp}°/↓${weatherState.minTemp}°",
+          "↑${weatherState.forecastCachedData!["maxTemp"]}°/↓${weatherState.forecastCachedData!["minTemp"]}°",
           style: GoogleFonts.kanit(
             fontSize: 27,
             color: mainColor,
@@ -709,7 +458,7 @@ class IndexPage extends StatelessWidget {
           ),
         ),
         Text(
-          "Sensación térmica: ${weatherState.aparentTemp} °C",
+          "Sensación térmica: ${weatherState.metarCacheData!["heatIndex"]} °C",
           style: GoogleFonts.kanit(
             fontSize: 27,
             color: mainColor,
@@ -745,7 +494,7 @@ class IndexPage extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              "Cielo ${weatherState.cloudDescription.keys.first}",
+                              "Cielo ${weatherState.cloudDescription.keys.first} ",
                               style: GoogleFonts.kanit(
                                 fontSize: 20,
                                 color: Colors.white,
@@ -874,7 +623,7 @@ class StartPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    var weatherState = context.watch<WeatherAPIState>();
+    var weatherState = context.watch<WeatherService>();
     var appPermission = weatherState.appPermission;
 
     return SizedBox(
@@ -942,7 +691,7 @@ class Cards extends StatelessWidget {
   Cards({super.key, required this.weatherState});
 
   final cardPadding = EdgeInsets.all(15);
-  final WeatherAPIState weatherState;
+  final WeatherService weatherState;
   double fontCardSize = 18.0;
 
   var mainCardColor = Color.fromARGB(150, 10, 91, 119);
@@ -968,7 +717,7 @@ class Cards extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    "Humedad: ${weatherState.humidity} %",
+                    "Humedad: ${weatherState.metarCacheData!["humidity"]} %",
                     style: TextStyle(
                       fontSize: fontCardSize,
                       color: secondaryCardColor,
@@ -978,7 +727,8 @@ class Cards extends StatelessWidget {
                   SizedBox(
                     height: 10,
                     child: LinearProgressIndicator(
-                      value: (weatherState.humidity ?? 1) / 100,
+                      value:
+                          (weatherState.metarCacheData!["humidity"] ?? 1) / 100,
                       color: secondaryCardColor,
                       backgroundColor: mainCardColor,
                     ),
@@ -993,7 +743,7 @@ class Cards extends StatelessWidget {
             child: Padding(
               padding: cardPadding,
               child: Text(
-                "Viento: ${weatherState.wind} km/h",
+                "Viento: ${weatherState.metarCacheData!["windSpeed"]} km/h",
                 style: TextStyle(
                   fontSize: fontCardSize,
                   color: secondaryCardColor,
@@ -1007,7 +757,7 @@ class Cards extends StatelessWidget {
             child: Padding(
               padding: cardPadding,
               child: Text(
-                "Presión: ${weatherState.pressure} hPa",
+                "Presión: ${weatherState.metarCacheData!["pressure"]} hPa",
                 style: TextStyle(
                   fontSize: fontCardSize,
                   color: secondaryCardColor,
@@ -1021,7 +771,7 @@ class Cards extends StatelessWidget {
             child: Padding(
               padding: cardPadding,
               child: Text(
-                "Precipitación: ${weatherState.precipitation} mm",
+                "Precipitación: ${weatherState.forecastCachedData!["presipitationByHours"][0]} mm",
                 style: TextStyle(
                   fontSize: fontCardSize,
                   color: secondaryCardColor,
@@ -1035,7 +785,7 @@ class Cards extends StatelessWidget {
             child: Padding(
               padding: cardPadding,
               child: Text(
-                "Lluvia: ${weatherState.rain} mm",
+                "",
                 style: TextStyle(
                   fontSize: fontCardSize,
                   color: secondaryCardColor,

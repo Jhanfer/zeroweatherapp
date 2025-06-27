@@ -45,6 +45,14 @@ class UpdateScreenState extends State<UpdateScreen> {
   String _status = "Verificando actualizaciones...";
   String globalApkUrl = "";
 
+  int _parseInt(String s) {
+    try {
+      return int.parse(s);
+    } catch (e) {
+      return 0;
+    }
+  }
+
   Future<void> checkForUpdates() async {
     try {
       // Obtener la versión actual de la app
@@ -65,17 +73,32 @@ class UpdateScreenState extends State<UpdateScreen> {
         bool forceUpdate = data["force_update"];
 
         // Comparar versiones
-        if (latestVersion != currentVersion) {
-          emitEvent({
-            "show_update_dialog": {
-              "apkUrl": apkUrl,
-              "latestVersion": latestVersion,
-              "forceUpdate": forceUpdate,
-            },
-          });
-        } else {
-          _status = "App actualizada (versión $currentVersion)";
-          debugPrint(_status);
+
+        //se divide por el punto y se hace un parseo de los numeros a enteros con el iterable "map" para poder compararlos de manera individual
+        var v1 = currentVersion.split(".").map(_parseInt).toList();
+        var v2 = latestVersion.split(".").map(_parseInt).toList();
+
+        // se recorre la lista de versiones para compararlas
+        for (int i = 0; i < v1.length; i++) {
+          // aqui lo que se hace es recorrer las listas, osea, los numeros de las versiones. Se recorre segun el tamaño de la lista (3), si una lista tiene menos elementos, se rellena con 0. Después se compara cada elemento de la lista, si el elemento de la lista 1 es mayor que el elemento de la lista 2, se devuelve true, indicando que la version 1 es mayor que la version 2
+          int part1 = i < v1.length ? v1[i] : 0;
+          int part2 = i < v2.length ? v2[i] : 0;
+
+          if (part1 < part2) {
+            emitEvent({
+              "show_update_dialog": {
+                "apkUrl": apkUrl,
+                "latestVersion": latestVersion,
+                "forceUpdate": forceUpdate,
+              },
+            });
+          }
+          if (part1 > part2) {
+            {
+              _status = "App actualizada (versión $currentVersion)";
+              debugPrint(_status);
+            }
+          }
         }
       } else {
         _status = "Error al verificar actualizaciones";
