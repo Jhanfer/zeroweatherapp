@@ -239,7 +239,7 @@ class _MyHomePageState extends State<MyHomePage> {
       body: Stack(
         children: [
           Positioned.fill(child: MovingCloudsBackground()),
-          newWeatherApi.metarCacheData!.isEmpty
+          newWeatherApi.forecastCachedData!.isEmpty
               ? StartPage(mainColor: mainColor, secondaryColor: secondaryColor)
               : RefreshIndicator(
                   color: titleTextColor,
@@ -274,7 +274,7 @@ class _MyHomePageState extends State<MyHomePage> {
                                     separatedTemp: separatedTemp,
                                     secondaryColor: secondaryColor,
                                     hours: (hours as List<dynamic>)
-                                        .map((e) => int.parse(e))
+                                        .map((e) => e as int)
                                         .toList(),
                                     tempByHours: (tempByHours as List<dynamic>)
                                         .map((e) => e as double)
