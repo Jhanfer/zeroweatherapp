@@ -28,6 +28,7 @@ class Station {
 class WeatherService with ChangeNotifier {
   List<Station> _stations = [];
   Station? _currentStation;
+  List<Station> _nearbyStations = [];
   final Map<String, String> isoCountryToContinent = {
     // Norteamérica
     "US": "NA",
@@ -115,10 +116,12 @@ class WeatherService with ChangeNotifier {
           _currentPosition["latitude"],
           _currentPosition["longitude"],
         );
+
         if (placemarks.isNotEmpty) {
           safeSiteName =
               placemarks.first.locality ??
               placemarks.first.subLocality ??
+              placemarks.first.street ??
               "Ubicación desconocida.";
           currentCountry = placemarks.first.isoCountryCode.toString();
         }
@@ -132,12 +135,14 @@ class WeatherService with ChangeNotifier {
           safeSiteName =
               placemarks.first.locality ??
               placemarks.first.subLocality ??
+              placemarks.first.street ??
               "Ubicación desconocida.";
           currentCountry = placemarks.first.isoCountryCode.toString();
         }
       }
 
       siteName = safeSiteName.toString();
+
       country = currentCountry;
     } catch (e) {
       debugPrint("Error al obtener el nombre de localidad: $e");
@@ -156,7 +161,7 @@ class WeatherService with ChangeNotifier {
         final decodedPositionCache = jsonDecode(cachedPositionJson);
         final timeStamp = decodedPositionCache["timeStamp"] ?? 0;
 
-        if (DateTime.now().millisecondsSinceEpoch - timeStamp < 5 * 60 * 1000) {
+        if (DateTime.now().millisecondsSinceEpoch - timeStamp < 2 * 60 * 1000) {
           debugPrint("Usando posición mejorada cacheada.");
           currentPosition = decodedPositionCache;
         }
@@ -252,25 +257,37 @@ class WeatherService with ChangeNotifier {
   //Encontrar la estación más cercana
   findNerbyStation() {
     debugPrint("Iniciando búsqueda de estación cercana.");
-    if (_stations.isEmpty) return null;
-
-    Station nearest = _stations.first;
-    double minDistance = double.infinity;
-
-    for (var station in _stations) {
+    if (_stations.isEmpty) {
+      debugPrint("No hay estaciones disponibles.");
+      _nearbyStations = [];
+      notifyListeners();
+      return;
+    }
+    // Ordenar estaciones por distancia
+    List<Map<String, dynamic>> stationsWithDistance = _stations.map((station) {
       double distance = Geolocator.distanceBetween(
         _currentPosition["latitude"] ?? 0.0,
         _currentPosition["longitude"] ?? 0.0,
         station.latitude,
         station.longitude,
       );
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearest = station;
-      }
-    }
-    _currentStation = nearest;
-    debugPrint(_currentStation?.code);
+      return {'station': station, 'distance': distance};
+    }).toList();
+
+    // Ordenar por distancia ascendente
+    stationsWithDistance.sort((a, b) => a["distance"].compareTo(b["distance"]));
+
+    // Tomar las 3 estaciones más cercanas (o menos si no hay suficientes)
+    _nearbyStations = stationsWithDistance
+        .take(3)
+        .map<Station>((entry) => entry["station"] as Station)
+        .toList();
+
+    // Establecer la estación más cercana como _currentStation
+    _currentStation = _nearbyStations.isNotEmpty ? _nearbyStations.first : null;
+    debugPrint(
+      "Estaciones cercanas encontradas: ${_nearbyStations.map((s) => s.code).join(', ')}",
+    );
     notifyListeners();
   }
 
@@ -317,8 +334,6 @@ class WeatherService with ChangeNotifier {
     }
 
     if (dataToUse == null || hasMovedSignificantly()) {
-      debugPrint(_currentStation!.code);
-
       // Descargar los datos METAR
       try {
         if (country.isNotEmpty) {
@@ -340,160 +355,177 @@ class WeatherService with ChangeNotifier {
             );
           }
 
+          if (metarResponse.statusCode != 200 ||
+              metarResponse.body.isEmpty == true) {
+            for (var station in _nearbyStations) {
+              metarResponse = await http.get(
+                Uri.parse(
+                  "https://tgftp.nws.noaa.gov/data/observations/metar/stations/${station.code}.TXT",
+                ),
+              );
+              if (metarResponse.statusCode == 200) {
+                debugPrint("estación que funciona ${station.code}");
+                _currentStation = station;
+                break;
+              }
+            }
+          }
+
           meteoResponse = await http.get(
             Uri.parse(
               "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code",
             ),
           );
         }
-
-        if (metarResponse?.statusCode == 200 &&
-            meteoResponse?.statusCode == 200) {
-          debugPrint("OnlineData");
-          final lines = metarResponse?.body.split("\n");
-          //Datos de api externa
-          final externalData = jsonDecode(meteoResponse!.body);
-          String? temp, dewPoint, pressure, condition;
-          DateTime? dateTime;
-          double? windKmh;
-
-          for (var line in lines!) {
-            final parts = line.trim().split(" ");
-            for (var part in parts) {
-              if (part.length == 7 && part.endsWith("Z")) {
-                int day = int.parse(part.substring(0, 2));
-                int hour = int.parse(part.substring(2, 4));
-                int minute = int.parse(part.substring(4, 6));
-                final now = DateTime.now();
-                dateTime = DateTime.parse(
-                  "${now.year}-${now.month.toString().padLeft(2, "0")}-$day ${hour.toString().padLeft(2, "0")}:${minute.toString().padLeft(2, "0")}:00",
-                ).toUtc();
-              }
-
-              if (part.contains("/")) {
-                final tempDewRegex = RegExp(r"^M?\d{2}/M?\d{2}$");
-                // "^" y "$" aseguran que todos los digitos encajen. "M?\d{2}" significa que puede haber un "M" opcional seguido de 2 digitos. "/" una barra normal. "M?\d{2}" lo mismo que antes.
-                if (tempDewRegex.hasMatch(part)) {
-                  final tempDew = part.split("/");
-                  temp = tempDew[0].replaceFirst("M", "-");
-                  //Temperatura
-                  dewPoint = tempDew[1].replaceFirst("M", "-");
-                }
-              }
-              if (part.contains("KT")) {
-                var windSpeed = part; //Viento
-                final speedMatch = RegExp(
-                  r'(\d{2,3})(?:G\d{2,3})?KT$',
-                ).firstMatch(windSpeed);
-                if (speedMatch != null) {
-                  final speedKt = int.parse(speedMatch.group(1)!);
-                  if (speedKt >= 0 && speedKt <= 100) {
-                    // Validar rango razonable
-                    final speedKmh = speedKt * 1.852;
-                    windKmh = speedKmh; // Ej. 16.7 km/h
-                  } else {
-                    windKmh = 0.0; // Velocidad fuera de rango
-                  }
-                } else {
-                  windKmh = 0.0; // No se pudo extraer velocidad
-                }
-              }
-              if (part.startsWith("Q") ||
-                  part.startsWith("A") && part.length == 5) {
-                final pressureString = part.substring(1); //eliminar Q o A
-                if (part.startsWith("Q")) {
-                  pressure = pressureString;
-                } else {
-                  final intValue = int.tryParse(pressureString);
-                  if (intValue != null) {
-                    double pressureDouble = intValue / 100;
-                    const double conversionFactor = 33.86388666667;
-                    pressure = (pressureDouble * conversionFactor)
-                        .toStringAsFixed(2);
-                  }
-                }
-              }
-              if (["CLR", "FEW", "SCT", "BKN", "OVC"].contains(part)) {
-                condition = part; //Condición
-              }
-            }
-          }
-
-          if (temp != null && dewPoint != null) {
-            double tempC = double.parse(temp);
-            double dewPointC = double.parse(dewPoint);
-            double? heatIndex;
-
-            //Calcular humedad
-            var vaporDewPressure =
-                6.112 * exp((17.625 * dewPointC) / (dewPointC + 243.04));
-            var vaporTempPressure =
-                6.112 * exp((17.625 * tempC) / (tempC + 243.04));
-            double humidity = 100 * (vaporDewPressure / vaporTempPressure);
-
-            //Calcular sensación térmica
-            if (tempC < 10.0 && windKmh != null && windKmh > 4.8) {
-              final v = pow(windKmh, 0.16);
-              heatIndex =
-                  13.12 + 0.6215 * tempC - 11.37 * v + 0.3965 * tempC * v;
-            } else if (tempC > 27.0 && humidity > 40) {
-              // Convertir °C a °F
-              final T = tempC * 9 / 5 + 32;
-              final rh = humidity;
-              // Fórmula NOAA para Heat Index en °F
-              final hi =
-                  -42.379 +
-                  2.04901523 * T +
-                  10.14333127 * rh -
-                  0.22475541 * T * rh -
-                  6.83783e-3 * T * T -
-                  5.481717e-2 * rh * rh +
-                  1.22874e-3 * T * T * rh +
-                  8.5282e-4 * T * rh * rh -
-                  1.99e-6 * T * T * rh * rh;
-
-              // Convertir HI de °F a °C
-              heatIndex = (hi - 32) * 5 / 9;
-            } else {
-              heatIndex = tempC;
-            }
-
-            dataToUse = {
-              "temperature": tempC,
-              "dewPoint": dewPointC,
-              "humidity": humidity.roundToDouble(),
-              "windSpeed": windKmh,
-              "heatIndex": heatIndex.toStringAsFixed(2),
-              "pressure": pressure ?? "NA",
-              "condition": condition ?? "NA",
-              "cloudCover": externalData["current"]["cloud_cover"] / 100 * 100,
-              "dateTime": dateTime.toString(),
-              "currentPrecipitation": externalData["current"]["precipitation"],
-              "currentShowers": externalData["current"]["showers"],
-              "currentSnowfall": externalData["current"]["snowfall"],
-              "currentWindGusts": externalData["current"]["wind_gusts_10m"],
-              "currentSurfacePressure":
-                  externalData["current"]["surface_pressure"],
-              "isDay": externalData["current"]["is_day"],
-              "timeStamp": DateTime.now().millisecondsSinceEpoch,
-              "weather_code": externalData["current"]["weather_code"],
-              "METAR_ICAO": _currentStation!.code,
-            };
-
-            debugPrint(_currentStation!.name);
-
-            //Guardar caché
-            final success = await prefs.setString(
-              cacheKey,
-              json.encode(dataToUse),
-            );
-            debugPrint("¿Guardado el tiempo en caché?: $success");
-          } else {
-            throw Exception("No se pudo obtener la información del clima");
-          }
-        }
       } catch (e) {
         debugPrint("$e");
+      }
+
+      if (metarResponse?.statusCode == 200 &&
+          meteoResponse?.statusCode == 200) {
+        debugPrint("OnlineData");
+
+        final lines = metarResponse?.body.split("\n");
+        debugPrint("$lines");
+        //Datos de api externa
+        final externalData = jsonDecode(meteoResponse!.body);
+        String? temp, dewPoint, pressure, condition;
+        DateTime? dateTime;
+        double? windKmh;
+
+        for (var line in lines!) {
+          final parts = line.trim().split(" ");
+          for (var part in parts) {
+            if (part.length == 7 && part.endsWith("Z")) {
+              int day = int.parse(part.substring(0, 2));
+              int hour = int.parse(part.substring(2, 4));
+              int minute = int.parse(part.substring(4, 6));
+              final now = DateTime.now();
+              dateTime = DateTime.parse(
+                "${now.year}-${now.month.toString().padLeft(2, "0")}-$day ${hour.toString().padLeft(2, "0")}:${minute.toString().padLeft(2, "0")}:00",
+              ).toUtc();
+            }
+
+            if (part.contains("/")) {
+              final tempDewRegex = RegExp(r"^M?\d{2}/M?\d{2}$");
+              // "^" y "$" aseguran que todos los digitos encajen. "M?\d{2}" significa que puede haber un "M" opcional seguido de 2 digitos. "/" una barra normal. "M?\d{2}" lo mismo que antes.
+              if (tempDewRegex.hasMatch(part)) {
+                final tempDew = part.split("/");
+                temp = tempDew[0].replaceFirst("M", "-");
+                //Temperatura
+                dewPoint = tempDew[1].replaceFirst("M", "-");
+              }
+            }
+            if (part.contains("KT")) {
+              var windSpeed = part; //Viento
+              final speedMatch = RegExp(
+                r'(\d{2,3})(?:G\d{2,3})?KT$',
+              ).firstMatch(windSpeed);
+              if (speedMatch != null) {
+                final speedKt = int.parse(speedMatch.group(1)!);
+                if (speedKt >= 0 && speedKt <= 100) {
+                  // Validar rango razonable
+                  final speedKmh = speedKt * 1.852;
+                  windKmh = speedKmh; // Ej. 16.7 km/h
+                } else {
+                  windKmh = 0.0; // Velocidad fuera de rango
+                }
+              } else {
+                windKmh = 0.0; // No se pudo extraer velocidad
+              }
+            }
+            if (part.startsWith("Q") ||
+                part.startsWith("A") && part.length == 5) {
+              final pressureString = part.substring(1); //eliminar Q o A
+              if (part.startsWith("Q")) {
+                pressure = pressureString;
+              } else {
+                final intValue = int.tryParse(pressureString);
+                if (intValue != null) {
+                  double pressureDouble = intValue / 100;
+                  const double conversionFactor = 33.86388666667;
+                  pressure = (pressureDouble * conversionFactor)
+                      .toStringAsFixed(2);
+                }
+              }
+            }
+            if (["CLR", "FEW", "SCT", "BKN", "OVC"].contains(part)) {
+              condition = part; //Condición
+            }
+          }
+        }
+
+        if (temp != null && dewPoint != null) {
+          double tempC = double.parse(temp);
+          double dewPointC = double.parse(dewPoint);
+          double? heatIndex;
+
+          //Calcular humedad
+          var vaporDewPressure =
+              6.112 * exp((17.625 * dewPointC) / (dewPointC + 243.04));
+          var vaporTempPressure =
+              6.112 * exp((17.625 * tempC) / (tempC + 243.04));
+          double humidity = 100 * (vaporDewPressure / vaporTempPressure);
+
+          //Calcular sensación térmica
+          if (tempC < 10.0 && windKmh != null && windKmh > 4.8) {
+            final v = pow(windKmh, 0.16);
+            heatIndex = 13.12 + 0.6215 * tempC - 11.37 * v + 0.3965 * tempC * v;
+          } else if (tempC > 27.0 && humidity > 40) {
+            // Convertir °C a °F
+            final T = tempC * 9 / 5 + 32;
+            final rh = humidity;
+            // Fórmula NOAA para Heat Index en °F
+            final hi =
+                -42.379 +
+                2.04901523 * T +
+                10.14333127 * rh -
+                0.22475541 * T * rh -
+                6.83783e-3 * T * T -
+                5.481717e-2 * rh * rh +
+                1.22874e-3 * T * T * rh +
+                8.5282e-4 * T * rh * rh -
+                1.99e-6 * T * T * rh * rh;
+
+            // Convertir HI de °F a °C
+            heatIndex = (hi - 32) * 5 / 9;
+          } else {
+            heatIndex = tempC;
+          }
+
+          dataToUse = {
+            "temperature": tempC,
+            "dewPoint": dewPointC,
+            "humidity": humidity.roundToDouble(),
+            "windSpeed": windKmh,
+            "heatIndex": heatIndex.toStringAsFixed(2),
+            "pressure": pressure ?? "NA",
+            "condition": condition ?? "NA",
+            "cloudCover": externalData["current"]["cloud_cover"] / 100 * 100,
+            "dateTime": dateTime.toString(),
+            "currentPrecipitation": externalData["current"]["precipitation"],
+            "currentShowers": externalData["current"]["showers"],
+            "currentSnowfall": externalData["current"]["snowfall"],
+            "currentWindGusts": externalData["current"]["wind_gusts_10m"],
+            "currentSurfacePressure":
+                externalData["current"]["surface_pressure"],
+            "isDay": externalData["current"]["is_day"],
+            "timeStamp": DateTime.now().millisecondsSinceEpoch,
+            "weather_code": externalData["current"]["weather_code"],
+            "METAR_ICAO": _currentStation!.code,
+          };
+
+          debugPrint(_currentStation!.name);
+
+          //Guardar caché
+          final success = await prefs.setString(
+            cacheKey,
+            json.encode(dataToUse),
+          );
+          debugPrint("¿Guardado el tiempo en caché?: $success");
+        } else {
+          throw Exception("No se pudo obtener la información del clima");
+        }
       }
     }
 
@@ -527,7 +559,7 @@ class WeatherService with ChangeNotifier {
       }
     }
 
-    if (dataToUse == null) {
+    if (dataToUse == null || hasMovedSignificantly()) {
       try {
         forecastHourlyResponse = await http.get(
           Uri.parse(
@@ -610,6 +642,14 @@ class WeatherService with ChangeNotifier {
         debugPrint("Error: $e");
       }
     }
+
+    const double ciudadOffset = 3.0;
+    var normalizedTemp =
+        (metarCacheData!["temperature"] * 0.4) +
+        (dataToUse!["tempByHours"][0] * 0.6) +
+        ciudadOffset;
+
+    metarCacheData!["temperature"] = normalizedTemp;
     forecastCachedData = dataToUse;
     notifyListeners();
   }

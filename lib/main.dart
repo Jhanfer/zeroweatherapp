@@ -154,8 +154,9 @@ class _MyHomePageState extends State<MyHomePage> {
       newWeatherService.getPosition().then((_) {
         newWeatherService.loadStation().then((_) {
           newWeatherService.findNerbyStation();
-          newWeatherService.fetchMetarData();
-          newWeatherService.getForecast();
+          newWeatherService.fetchMetarData().then((_) {
+            newWeatherService.getForecast();
+          });
         });
       });
     });
@@ -244,8 +245,8 @@ class _MyHomePageState extends State<MyHomePage> {
               : RefreshIndicator(
                   color: titleTextColor,
                   backgroundColor: mainColor,
-                  displacement: 50.0,
-                  edgeOffset: 0.0,
+                  displacement: 20.0,
+                  edgeOffset: -10,
                   onRefresh: () async {
                     await newWeatherApi.getPrecisePosition().then((_) {
                       newWeatherApi.findNerbyStation();

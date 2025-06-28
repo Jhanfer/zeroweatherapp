@@ -3,7 +3,7 @@ name: Flutter APK Auto Release
 on:
   push:
     tags:
-      - 'v*' # Solo se activa cuando hago `git push` con un tag como v1.0.0
+      - 'v*' # Solo se activa cuando haces git push con un tag como v1.0.0
 
 jobs:
   build:
@@ -19,7 +19,19 @@ jobs:
       - name: Instalar dependencias
         run: flutter pub get
 
-      - name: Compilar APK
+      - name: Decodificar keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/zeroweather-release-key.jks
+
+      - name: Crear key.properties
+        run: |
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=zeroweather-release-key.jks
+          EOF
+
+      - name: Compilar APK firmado
         run: flutter build apk --release
 
       - name: Crear Release en GitHub
