@@ -18,7 +18,7 @@
         
         android:label="zeroweather"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/launcher_icon"
         android:enableOnBackInvokedCallback="true">
         <!--El android:enableOnBackInvokedCallback="true" es para que el back button funcione correctamente-->
         <!--El file Provider es necesario para compartir archivos de manera segura entre aplicaciones-->

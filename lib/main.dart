@@ -154,8 +154,8 @@ class _MyHomePageState extends State<MyHomePage> {
       newWeatherService.getPosition().then((_) {
         newWeatherService.loadStation().then((_) {
           newWeatherService.findNerbyStation();
-          newWeatherService.fetchMetarData().then((_) {
-            newWeatherService.getForecast();
+          newWeatherService.getForecast().then((_) {
+            newWeatherService.fetchMetarData();
           });
         });
       });
@@ -169,7 +169,7 @@ class _MyHomePageState extends State<MyHomePage> {
           context: context,
           barrierDismissible: !event.values.first["forceUpdate"],
           builder: (context) => AlertDialog(
-            title: Text('Nueva versión disponible'),
+            title: Text("Nueva versión disponible"),
             content: Text(
               "Versión ${event.values.first["latestVersion"]} disponible. ¿Deseas actualizar?",
             ),
@@ -234,13 +234,15 @@ class _MyHomePageState extends State<MyHomePage> {
     var tempByHours = newWeatherApi.forecastCachedData!["tempByHours"];
     var hours = newWeatherApi.forecastCachedData!["tempHours"];
     var dates = newWeatherApi.forecastCachedData!["dates"];
+    var precipitation =
+        newWeatherApi.forecastCachedData!["precipitationByHours"];
 
     return Scaffold(
       backgroundColor: backgroundColor,
       body: Stack(
         children: [
           Positioned.fill(child: MovingCloudsBackground()),
-          newWeatherApi.forecastCachedData!.isEmpty
+          newWeatherApi.metarCacheData!.isEmpty
               ? StartPage(mainColor: mainColor, secondaryColor: secondaryColor)
               : RefreshIndicator(
                   color: titleTextColor,
@@ -250,8 +252,8 @@ class _MyHomePageState extends State<MyHomePage> {
                   onRefresh: () async {
                     await newWeatherApi.getPrecisePosition().then((_) {
                       newWeatherApi.findNerbyStation();
-                      newWeatherApi.fetchMetarData();
                       newWeatherApi.getForecast();
+                      newWeatherApi.fetchMetarData();
                     });
                   },
                   child: CustomScrollView(
@@ -284,6 +286,10 @@ class _MyHomePageState extends State<MyHomePage> {
                                     dates: (dates as List<dynamic>)
                                         .map((e) => DateTime.parse(e))
                                         .toList(),
+                                    precipitation:
+                                        (precipitation as List<dynamic>)
+                                            .map((e) => e as double)
+                                            .toList(),
                                   ),
                                 ],
                               ),
@@ -311,6 +317,7 @@ class IndexPage extends StatelessWidget {
     required this.hours,
     required this.titleTextColor,
     required this.dates,
+    required this.precipitation,
   });
 
   final WeatherService weatherState;
@@ -322,6 +329,7 @@ class IndexPage extends StatelessWidget {
   final List<double> tempByHours;
   final List<int> hours;
   final List<DateTime> dates;
+  final List<double> precipitation;
 
   @override
   Widget build(BuildContext context) {
@@ -470,6 +478,7 @@ class IndexPage extends StatelessWidget {
           margin: EdgeInsets.only(top: 20, left: 20, right: 20),
           child: Card(
             elevation: 10,
+            clipBehavior: Clip.none,
             color: Color.fromARGB(90, 10, 91, 119),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadiusGeometry.all(Radius.circular(10)),
@@ -516,15 +525,16 @@ class IndexPage extends StatelessWidget {
                     children: [
                       SizedBox(
                         width: spots.length * 60,
-                        height: 200,
+                        height: 150,
                         child: LineChart(
                           LineChartData(
-                            minX: -0.2,
-                            maxX: spots.length - 0.9,
+                            minX: 0,
+                            maxX: spots.length - 1,
                             minY: (tempByHours.first) - 10,
                             maxY: (tempByHours.first) + 40,
                             gridData: FlGridData(show: false),
                             borderData: FlBorderData(show: false),
+                            clipData: FlClipData.none(),
                             lineTouchData: LineTouchData(
                               enabled: false,
                               touchTooltipData: LineTouchTooltipData(
@@ -536,10 +546,11 @@ class IndexPage extends StatelessWidget {
                                       return touchedSpots.map((barSpot) {
                                         final hour =
                                             hours[barSpot
-                                                .spotIndex]; // tu lista de horas
+                                                .spotIndex]; // lista de horas
                                         final temp = barSpot.y.toStringAsFixed(
                                           1,
                                         ); // temperatura
+
                                         return LineTooltipItem(
                                           "$hour H\n$temp°C",
                                           const TextStyle(color: Colors.white),
@@ -560,22 +571,43 @@ class IndexPage extends StatelessWidget {
                             titlesData: FlTitlesData(
                               leftTitles: AxisTitles(
                                 axisNameWidget: Padding(
-                                  padding: EdgeInsets.all(12),
+                                  padding: EdgeInsets.all(10),
                                 ),
                                 sideTitles: SideTitles(
-                                  reservedSize: 50,
-                                  showTitles: false,
+                                  reservedSize: 11,
+                                  showTitles: true,
+                                  getTitlesWidget: (value, meta) {
+                                    return Text("");
+                                  },
                                 ),
                               ),
-                              bottomTitles: const AxisTitles(
-                                axisNameWidget: Padding(
-                                  padding: EdgeInsets.all(12),
-                                ),
+                              bottomTitles: AxisTitles(
                                 sideTitles: SideTitles(
                                   reservedSize: 40,
-                                  showTitles: false,
+                                  showTitles: true,
+                                  getTitlesWidget: (value, meta) {
+                                    final index = value.round();
+                                    if (index < 0 ||
+                                        index >= precipitation.length) {
+                                      return const SizedBox();
+                                    }
+
+                                    return SideTitleWidget(
+                                      axisSide: meta.axisSide,
+                                      space: 10,
+                                      child: Text(
+                                        "${precipitation[index].toInt()}%",
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
                               ),
+
                               topTitles: const AxisTitles(
                                 axisNameWidget: Padding(
                                   padding: EdgeInsets.all(12),
@@ -585,13 +617,16 @@ class IndexPage extends StatelessWidget {
                                   showTitles: false,
                                 ),
                               ),
-                              rightTitles: const AxisTitles(
-                                axisNameWidget: Padding(
+                              rightTitles: AxisTitles(
+                                axisNameWidget: const Padding(
                                   padding: EdgeInsets.all(12),
                                 ),
                                 sideTitles: SideTitles(
-                                  reservedSize: 40,
-                                  showTitles: false,
+                                  reservedSize: 11,
+                                  showTitles: true,
+                                  getTitlesWidget: (value, meta) {
+                                    return const Text("");
+                                  },
                                 ),
                               ),
                             ),
@@ -697,6 +732,21 @@ class Cards extends StatelessWidget {
 
   var mainCardColor = Color.fromARGB(150, 10, 91, 119);
   var secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
+  var titleTextColor = Color.fromARGB(255, 244, 240, 88);
+
+  Color _getColor(double value) {
+    if (value > 0.3 && value < 0.5) {
+      return Colors.yellow;
+    }
+    if (value > 0.4 && value < 0.6 || value == 0.6) {
+      return Colors.orange;
+    }
+    if (value > 0.7 || value == 0.7) {
+      return Colors.red;
+    }
+
+    return Colors.green;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -708,17 +758,58 @@ class Cards extends StatelessWidget {
         padding: EdgeInsets.all(30),
         shrinkWrap: true,
         physics: NeverScrollableScrollPhysics(),
-        childAspectRatio: (1 / 0.8),
+        childAspectRatio: (1 / 1.1),
         children: [
           Card(
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
                   Text(
-                    "Humedad: ${weatherState.metarCacheData!["humidity"]} %",
+                    "Rayos UV: ${weatherState.forecastCachedData!["dailyUVIndexMax"][0]}",
+                    style: TextStyle(
+                      fontSize: fontCardSize,
+                      color: secondaryCardColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 50),
+                    child: SizedBox(
+                      height: 10,
+                      child: LinearProgressIndicator(
+                        borderRadius: BorderRadius.all(Radius.circular(600)),
+                        value:
+                            (weatherState
+                                    .forecastCachedData!["dailyUVIndexMax"][0] ??
+                                1) /
+                            10,
+                        color: _getColor(
+                          (weatherState
+                                      .forecastCachedData!["dailyUVIndexMax"][0] ??
+                                  1) /
+                              10,
+                        ),
+                        backgroundColor: mainCardColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          Card(
+            color: mainCardColor,
+            child: Padding(
+              padding: cardPadding,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.start,
+                children: [
+                  Text(
+                    "Viento: ${weatherState.metarCacheData!["windSpeed"]} km/h",
                     style: TextStyle(
                       fontSize: fontCardSize,
                       color: secondaryCardColor,
@@ -726,12 +817,81 @@ class Cards extends StatelessWidget {
                     ),
                   ),
                   SizedBox(
-                    height: 10,
-                    child: LinearProgressIndicator(
-                      value:
-                          (weatherState.metarCacheData!["humidity"] ?? 1) / 100,
+                    height: 90,
+                    width: 90,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          width: 85,
+                          height: 85,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: secondaryCardColor,
+                              width: 10,
+                            ),
+                          ),
+                        ),
+
+                        Positioned(
+                          top: -2.2,
+                          child: Text("N", style: TextStyle(color: Colors.red)),
+                        ),
+                        Positioned(bottom: -2.2, child: Text("S")),
+                        Positioned(left: 2.2, child: Text("O")),
+                        Positioned(right: 2.2, child: Text("E")),
+
+                        Positioned(top: 0, left: 0, child: Text("NO")),
+                        Positioned(top: 0, right: 0, child: Text("NE")),
+
+                        Positioned(bottom: 0, left: 1, child: Text("SO")),
+                        Positioned(bottom: 0, right: 1, child: Text("SE")),
+
+                        Transform.rotate(
+                          angle: weatherState.metarCacheData!["widDirection"],
+                          child: Icon(
+                            Icons.navigation,
+                            size: 40,
+                            color: titleTextColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Card(
+            color: mainCardColor,
+            child: Padding(
+              padding: cardPadding,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Text(
+                    "Presión: ${weatherState.metarCacheData!["pressure"]} hPa",
+                    style: TextStyle(
+                      fontSize: fontCardSize,
                       color: secondaryCardColor,
-                      backgroundColor: mainCardColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 30),
+                    child: SizedBox(
+                      height: 10,
+                      child: LinearProgressIndicator(
+                        borderRadius: BorderRadius.all(Radius.circular(600)),
+                        value:
+                            (double.parse(
+                              weatherState.metarCacheData!["pressure"],
+                            )) /
+                            2000,
+                        color: secondaryCardColor,
+                        backgroundColor: mainCardColor,
+                      ),
                     ),
                   ),
                 ],
@@ -744,7 +904,7 @@ class Cards extends StatelessWidget {
             child: Padding(
               padding: cardPadding,
               child: Text(
-                "Viento: ${weatherState.metarCacheData!["windSpeed"]} km/h",
+                "Precipitación: ${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
                 style: TextStyle(
                   fontSize: fontCardSize,
                   color: secondaryCardColor,
@@ -757,13 +917,31 @@ class Cards extends StatelessWidget {
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
-              child: Text(
-                "Presión: ${weatherState.metarCacheData!["pressure"]} hPa",
-                style: TextStyle(
-                  fontSize: fontCardSize,
-                  color: secondaryCardColor,
-                  fontWeight: FontWeight.w300,
-                ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.start,
+                children: [
+                  Text(
+                    "Punto de rocío:",
+                    style: TextStyle(
+                      fontSize: fontCardSize,
+                      color: secondaryCardColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                  SizedBox(
+                    height: 100,
+                    child: Center(
+                      child: Text(
+                        "${weatherState.metarCacheData!["dewPoint"]} °C",
+                        style: TextStyle(
+                          fontSize: 35,
+                          fontWeight: FontWeight.w300,
+                          color: titleTextColor,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -771,31 +949,35 @@ class Cards extends StatelessWidget {
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
-              child: Text(
-                "Precipitación: ${weatherState.forecastCachedData!["presipitationByHours"][0]} mm",
-                style: TextStyle(
-                  fontSize: fontCardSize,
-                  color: secondaryCardColor,
-                  fontWeight: FontWeight.w300,
-                ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Text(
+                    "Humedad: ${weatherState.metarCacheData!["humidity"]} %",
+                    style: TextStyle(
+                      fontSize: fontCardSize,
+                      color: secondaryCardColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 30),
+                    child: SizedBox(
+                      height: 10,
+                      child: LinearProgressIndicator(
+                        borderRadius: BorderRadius.all(Radius.circular(600)),
+                        value:
+                            (weatherState.metarCacheData!["humidity"] ?? 1) /
+                            100,
+                        color: secondaryCardColor,
+                        backgroundColor: mainCardColor,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          Card(
-            color: mainCardColor,
-            child: Padding(
-              padding: cardPadding,
-              child: Text(
-                "",
-                style: TextStyle(
-                  fontSize: fontCardSize,
-                  color: secondaryCardColor,
-                  fontWeight: FontWeight.w300,
-                ),
-              ),
-            ),
-          ),
-          SizedBox(width: 1000, height: 1, child: Card(color: mainCardColor)),
         ],
       ),
     );

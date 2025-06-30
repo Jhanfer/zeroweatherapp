@@ -391,7 +391,7 @@ class WeatherService with ChangeNotifier {
         final externalData = jsonDecode(meteoResponse!.body);
         String? temp, dewPoint, pressure, condition;
         DateTime? dateTime;
-        double? windKmh;
+        double? windKmh, widDirection;
 
         for (var line in lines!) {
           final parts = line.trim().split(" ");
@@ -411,13 +411,27 @@ class WeatherService with ChangeNotifier {
               // "^" y "$" aseguran que todos los digitos encajen. "M?\d{2}" significa que puede haber un "M" opcional seguido de 2 digitos. "/" una barra normal. "M?\d{2}" lo mismo que antes.
               if (tempDewRegex.hasMatch(part)) {
                 final tempDew = part.split("/");
-                temp = tempDew[0].replaceFirst("M", "-");
                 //Temperatura
+                var initialTemp = tempDew[0].replaceFirst("M", "-");
+                var normalizedTemp =
+                    (int.parse(initialTemp) * 0.4) +
+                    (forecastCachedData!["tempByHours"][0] * 0.6);
+
+                temp = normalizedTemp.toString();
+
+                //Punto de rocío
                 dewPoint = tempDew[1].replaceFirst("M", "-");
               }
             }
             if (part.contains("KT")) {
               var windSpeed = part; //Viento
+
+              var direction = RegExp(r'^(\d{3})').firstMatch(windSpeed);
+
+              if (direction != null) {
+                widDirection = double.parse(direction.group(1)!);
+              }
+
               final speedMatch = RegExp(
                 r'(\d{2,3})(?:G\d{2,3})?KT$',
               ).firstMatch(windSpeed);
@@ -498,6 +512,7 @@ class WeatherService with ChangeNotifier {
             "dewPoint": dewPointC,
             "humidity": humidity.roundToDouble(),
             "windSpeed": windKmh,
+            "widDirection": widDirection,
             "heatIndex": heatIndex.toStringAsFixed(2),
             "pressure": pressure ?? "NA",
             "condition": condition ?? "NA",
@@ -582,6 +597,8 @@ class WeatherService with ChangeNotifier {
               houtlyData["hourly"]["precipitation_probability"];
           List<int> hours = [];
           List<String> dates = [];
+          List<double> parsedTemp = [];
+          List<double> parsedPrecipitation = [];
 
           var now = DateTime.now().toLocal();
           final limit = now.add(const Duration(hours: 24));
@@ -593,15 +610,13 @@ class WeatherService with ChangeNotifier {
                 !hours.contains(parsed.hour)) {
               hours.add(parsed.hour);
               dates.add(parsed.toIso8601String());
+
+              parsedTemp.add(hourlyTemp[i].toDouble());
+              parsedPrecipitation.add(
+                hourlyPrecipitationProbability[i].toDouble(),
+              );
             }
           }
-          var hourLenght = hours.length;
-          var parsedTemp = hourlyTemp.sublist(0, hourLenght);
-          var parsedPresipitation = hourlyPrecipitationProbability.sublist(
-            0,
-            hourLenght,
-          );
-          var tempByHours = List<double>.from(parsedTemp);
 
           final dailyData = jsonDecode(forecastDailyResponse.body);
           final dailySunrise = dailyData["daily"]["sunrise"];
@@ -610,19 +625,19 @@ class WeatherService with ChangeNotifier {
           final dailyDaylightDuration = dailyData["daily"]["daylight_duration"];
           final dailyUVIndexMax = dailyData["daily"]["uv_index_max"];
 
-          var maxTemp = tempByHours.reduce(
+          var maxTemp = parsedTemp.reduce(
             (currentMax, element) =>
                 element > currentMax ? element : currentMax,
           );
-          var minTemp = tempByHours.reduce(
+          var minTemp = parsedTemp.reduce(
             (currentMin, element) =>
                 element < currentMin ? element : currentMin,
           );
 
           dataToUse = {
             "tempHours": hours,
-            "presipitationByHours": parsedPresipitation,
-            "tempByHours": tempByHours,
+            "precipitationByHours": parsedPrecipitation,
+            "tempByHours": parsedTemp,
             "maxTemp": maxTemp,
             "minTemp": minTemp,
             "dates": dates,
@@ -639,17 +654,9 @@ class WeatherService with ChangeNotifier {
         final success = await prefs.setString(cacheKey, json.encode(dataToUse));
         debugPrint("¿Guardado forecast en caché?: $success");
       } catch (e) {
-        debugPrint("Error: $e");
+        debugPrint("Se ha presentado un error: $e");
       }
     }
-
-    const double ciudadOffset = 3.0;
-    var normalizedTemp =
-        (metarCacheData!["temperature"] * 0.4) +
-        (dataToUse!["tempByHours"][0] * 0.6) +
-        ciudadOffset;
-
-    metarCacheData!["temperature"] = normalizedTemp;
     forecastCachedData = dataToUse;
     notifyListeners();
   }
