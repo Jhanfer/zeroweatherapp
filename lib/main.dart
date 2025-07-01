@@ -154,8 +154,8 @@ class _MyHomePageState extends State<MyHomePage> {
       newWeatherService.getPosition().then((_) {
         newWeatherService.loadStation().then((_) {
           newWeatherService.findNerbyStation();
-          newWeatherService.fetchMetarData().then((_) {
-            newWeatherService.getForecast();
+          newWeatherService.getForecast().then((_) {
+            newWeatherService.fetchMetarData();
             newWeatherService.getICA();
           });
         });
