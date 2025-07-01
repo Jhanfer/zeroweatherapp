@@ -154,8 +154,9 @@ class _MyHomePageState extends State<MyHomePage> {
       newWeatherService.getPosition().then((_) {
         newWeatherService.loadStation().then((_) {
           newWeatherService.findNerbyStation();
-          newWeatherService.getForecast().then((_) {
-            newWeatherService.fetchMetarData();
+          newWeatherService.fetchMetarData().then((_) {
+            newWeatherService.getForecast();
+            newWeatherService.getICA();
           });
         });
       });
@@ -182,7 +183,7 @@ class _MyHomePageState extends State<MyHomePage> {
               TextButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  update.downloadAndInstallApkHTTP();
+                  update.downloadAndInstallApk();
                 },
                 child: Text("Actualizar"),
               ),
@@ -254,6 +255,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       newWeatherApi.findNerbyStation();
                       newWeatherApi.getForecast();
                       newWeatherApi.fetchMetarData();
+                      newWeatherApi.getICA();
                     });
                   },
                   child: CustomScrollView(
@@ -330,6 +332,25 @@ class IndexPage extends StatelessWidget {
   final List<int> hours;
   final List<DateTime> dates;
   final List<double> precipitation;
+
+  Color _getColor(double ica) {
+    debugPrint("$ica");
+    if (ica >= 3.01) {
+      return Color.fromARGB(255, 126, 0, 35);
+    } else if (ica >= 2.01) {
+      return Color.fromARGB(255, 143, 63, 151);
+    } else if (ica >= 1.51) {
+      return Color.fromARGB(255, 255, 0, 0);
+    } else if (ica >= 1.01) {
+      return Color.fromARGB(255, 255, 126, 0);
+    } else if (ica >= 0.51) {
+      return Color.fromARGB(255, 255, 255, 0);
+    } else if (ica >= 0) {
+      return Color.fromARGB(255, 0, 228, 0);
+    } else {
+      return Colors.grey;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -641,6 +662,40 @@ class IndexPage extends StatelessWidget {
             ),
           ),
         ),
+        Card(
+          color: Color.fromARGB(90, 10, 91, 119),
+          child: SizedBox(
+            height: 90,
+            width: 350,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    "ICA: ${weatherState.icaCache!["icaFinal"]}",
+                    style: TextStyle(fontSize: 20, color: Colors.white),
+                  ),
+                  SizedBox(
+                    height: 10,
+                    width: 200,
+                    child: LinearProgressIndicator(
+                      borderRadius: BorderRadius.all(Radius.circular(600)),
+                      value:
+                          ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
+                              0) /
+                          100,
+                      color: _getColor(
+                        ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
+                                0) /
+                            100,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
         Cards(weatherState: weatherState),
       ],
     );
@@ -734,18 +789,20 @@ class Cards extends StatelessWidget {
   var secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
   var titleTextColor = Color.fromARGB(255, 244, 240, 88);
 
-  Color _getColor(double value) {
-    if (value > 0.3 && value < 0.5) {
-      return Colors.yellow;
-    }
-    if (value > 0.4 && value < 0.6 || value == 0.6) {
-      return Colors.orange;
-    }
-    if (value > 0.7 || value == 0.7) {
+  Color _getColor(double uvIndex) {
+    if (uvIndex >= 1.1) {
+      return Colors.deepPurple;
+    } else if (uvIndex >= 0.8) {
       return Colors.red;
+    } else if (uvIndex >= 0.6) {
+      return Colors.orange;
+    } else if (uvIndex >= 0.3) {
+      return Colors.yellow;
+    } else if (uvIndex >= 0) {
+      return Colors.green;
+    } else {
+      return Colors.grey;
     }
-
-    return Colors.green;
   }
 
   @override
@@ -827,26 +884,116 @@ class Cards extends StatelessWidget {
                           height: 85,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            border: Border.all(
-                              color: secondaryCardColor,
-                              width: 10,
+                            border: Border.all(color: Colors.grey, width: 10),
+                          ),
+                        ),
+
+                        Positioned(
+                          top: -7,
+                          child: Text(
+                            "N",
+                            style: GoogleFonts.kanit(
+                              fontSize: 20,
+                              color: Colors.red,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          bottom: -7,
+                          child: Text(
+                            "S",
+                            style: GoogleFonts.kanit(
+                              fontSize: 20,
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: 0.5,
+                          child: Text(
+                            "O",
+                            style: GoogleFonts.kanit(
+                              fontSize: 20,
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          right: 2.2,
+                          child: Text(
+                            "E",
+                            style: GoogleFonts.kanit(
+                              fontSize: 20,
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
 
                         Positioned(
-                          top: -2.2,
-                          child: Text("N", style: TextStyle(color: Colors.red)),
+                          top: 7,
+                          left: 8,
+                          child: Transform.rotate(
+                            angle: 150,
+                            child: Text(
+                              "NO",
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                         ),
-                        Positioned(bottom: -2.2, child: Text("S")),
-                        Positioned(left: 2.2, child: Text("O")),
-                        Positioned(right: 2.2, child: Text("E")),
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Transform.rotate(
+                            angle: 151.6,
+                            child: Text(
+                              "NE",
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
 
-                        Positioned(top: 0, left: 0, child: Text("NO")),
-                        Positioned(top: 0, right: 0, child: Text("NE")),
-
-                        Positioned(bottom: 0, left: 1, child: Text("SO")),
-                        Positioned(bottom: 0, right: 1, child: Text("SE")),
+                        Positioned(
+                          bottom: 8,
+                          left: 10,
+                          child: Transform.rotate(
+                            angle: 151.6,
+                            child: Text(
+                              "SO",
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          right: 11,
+                          child: Transform.rotate(
+                            angle: 156.3,
+                            child: Text(
+                              "SE",
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
 
                         Transform.rotate(
                           angle: weatherState.metarCacheData!["widDirection"],

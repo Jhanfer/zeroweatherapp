@@ -68,6 +68,7 @@ class WeatherService with ChangeNotifier {
   var appPermission = true;
   Map<String, dynamic>? metarCacheData = {};
   Map<String, dynamic>? forecastCachedData = {};
+  Map<String, dynamic>? icaCache = {};
 
   var siteName = "";
   var country = "";
@@ -402,7 +403,7 @@ class WeatherService with ChangeNotifier {
               int minute = int.parse(part.substring(4, 6));
               final now = DateTime.now();
               dateTime = DateTime.parse(
-                "${now.year}-${now.month.toString().padLeft(2, "0")}-$day ${hour.toString().padLeft(2, "0")}:${minute.toString().padLeft(2, "0")}:00",
+                "${now.year}-${now.month.toString().padLeft(2, "0")}-${day.toString().padLeft(2, "0")} ${hour.toString().padLeft(2, "0")}:${minute.toString().padLeft(2, "0")}:00",
               ).toUtc();
             }
 
@@ -578,13 +579,13 @@ class WeatherService with ChangeNotifier {
       try {
         forecastHourlyResponse = await http.get(
           Uri.parse(
-            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability",
+            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,uv_index",
           ),
         );
 
         forecastDailyResponse = await http.get(
           Uri.parse(
-            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,sunshine_duration,daylight_duration,uv_index_max",
+            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,sunshine_duration,daylight_duration",
           ),
         );
 
@@ -595,10 +596,12 @@ class WeatherService with ChangeNotifier {
           final hourlyTime = houtlyData["hourly"]["time"];
           final hourlyPrecipitationProbability =
               houtlyData["hourly"]["precipitation_probability"];
+          final hourlyUVIndex = houtlyData["hourly"]["uv_index"];
           List<int> hours = [];
           List<String> dates = [];
           List<double> parsedTemp = [];
           List<double> parsedPrecipitation = [];
+          List<double> dailyUVIndexMax = [];
 
           var now = DateTime.now().toLocal();
           final limit = now.add(const Duration(hours: 24));
@@ -615,6 +618,9 @@ class WeatherService with ChangeNotifier {
               parsedPrecipitation.add(
                 hourlyPrecipitationProbability[i].toDouble(),
               );
+              if (parsed.hour == now.hour) {
+                dailyUVIndexMax.add(hourlyUVIndex[i].toDouble());
+              }
             }
           }
 
@@ -623,7 +629,6 @@ class WeatherService with ChangeNotifier {
           final dailySunset = dailyData["daily"]["sunset"];
           final dailySunshineDuration = dailyData["daily"]["sunshine_duration"];
           final dailyDaylightDuration = dailyData["daily"]["daylight_duration"];
-          final dailyUVIndexMax = dailyData["daily"]["uv_index_max"];
 
           var maxTemp = parsedTemp.reduce(
             (currentMax, element) =>
@@ -657,7 +662,162 @@ class WeatherService with ChangeNotifier {
         debugPrint("Se ha presentado un error: $e");
       }
     }
+
     forecastCachedData = dataToUse;
     notifyListeners();
   }
+
+  int? calcularICA(double concentracion, List breakpoints) {
+    for (final bp in breakpoints) {
+      if (concentracion >= bp.clo && concentracion <= bp.chi) {
+        return ((bp.ihi - bp.ilo) /
+                    (bp.chi - bp.clo) *
+                    (concentracion - bp.clo) +
+                bp.ilo)
+            .round();
+      }
+    }
+    return null; // fuera de rango
+  }
+
+  void getICA() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = "ICA";
+    final icaCachedData = prefs.getString(cacheKey);
+    http.Response? icaResponse;
+    Map<String, dynamic>? dataToUse;
+
+    if (icaCachedData != null) {
+      final data = jsonDecode(icaCachedData);
+      final timeStamp = data["timeStamp"] ?? 0;
+
+      if (DateTime.now().millisecondsSinceEpoch - timeStamp < 30 * 60 * 1000) {
+        debugPrint("CachedICAData");
+        dataToUse = data;
+      }
+    }
+
+    final pm25Breakpoints = [
+      Breakpoint(0.0, 12.0, 0, 50),
+      Breakpoint(12.1, 35.4, 51, 100),
+      Breakpoint(35.5, 55.4, 101, 150),
+      Breakpoint(55.5, 150.4, 151, 200),
+      Breakpoint(150.5, 250.4, 201, 300),
+      Breakpoint(250.5, 350.4, 301, 400),
+      Breakpoint(350.5, 500.4, 401, 500),
+    ];
+
+    final pm10Breakpoints = [
+      Breakpoint(0.0, 54.0, 0, 50),
+      Breakpoint(55.0, 154.0, 51, 100),
+      Breakpoint(155.0, 254.0, 101, 150),
+      Breakpoint(255.0, 354.0, 151, 200),
+      Breakpoint(355.0, 424.0, 201, 300),
+      Breakpoint(425.0, 504.0, 301, 400),
+      Breakpoint(505.0, 604.0, 401, 500),
+    ];
+
+    final ozoneBreakpoints = [
+      Breakpoint(0.0, 120.0, 0, 50),
+      Breakpoint(121.0, 180.0, 51, 100),
+      Breakpoint(181.0, 240.0, 101, 150),
+      Breakpoint(241.0, 300.0, 151, 200),
+      Breakpoint(301.0, 400.0, 201, 300),
+      Breakpoint(401.0, 800.0, 301, 500),
+    ];
+
+    final nitrogenDioxideBreakpoints = [
+      Breakpoint(0.0, 40.0, 0, 50),
+      Breakpoint(41.0, 80.0, 51, 100),
+      Breakpoint(81.0, 180.0, 101, 150),
+      Breakpoint(181.0, 280.0, 151, 200),
+      Breakpoint(281.0, 400.0, 201, 300),
+      Breakpoint(401.0, 520.0, 301, 400),
+      Breakpoint(521.0, 650.0, 401, 500),
+    ];
+
+    final sulphurDioxideBreakpoints = [
+      Breakpoint(0.0, 20.0, 0, 50),
+      Breakpoint(21.0, 80.0, 51, 100),
+      Breakpoint(81.0, 250.0, 101, 150),
+      Breakpoint(251.0, 350.0, 151, 200),
+      Breakpoint(351.0, 500.0, 201, 300),
+      Breakpoint(501.0, 750.0, 301, 400),
+      Breakpoint(751.0, 1000.0, 401, 500),
+    ];
+
+    final carbonMonoxideBreakpoints = [
+      // CO viene en µg/m³ y debe convertirse a mg/m³ (dividir entre 1000)
+      Breakpoint(0.0, 4.4, 0, 50),
+      Breakpoint(4.5, 9.4, 51, 100),
+      Breakpoint(9.5, 12.4, 101, 150),
+      Breakpoint(12.5, 15.4, 151, 200),
+      Breakpoint(15.5, 30.4, 201, 300),
+      Breakpoint(30.5, 40.4, 301, 400),
+      Breakpoint(40.5, 50.4, 401, 500),
+    ];
+
+    if (dataToUse == null || hasMovedSignificantly()) {
+      try {
+        icaResponse = await http.get(
+          Uri.parse(
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=pm2_5,carbon_monoxide,sulphur_dioxide,ozone,nitrogen_dioxide,pm10",
+          ),
+        );
+
+        if (icaResponse.statusCode == 200) {
+          final data = jsonDecode(icaResponse.body);
+          final pm25 = data["current"]["pm2_5"];
+          final pm10 = data["current"]["pm10"];
+          final carbonMonoxide = data["current"]["carbon_monoxide"];
+          final sulphurDioxide = data["current"]["sulphur_dioxide"];
+          final ozone = data["current"]["ozone"];
+          final nitrogenDioxide = data["current"]["nitrogen_dioxide"];
+
+          final icas = [
+            calcularICA(pm25, pm25Breakpoints),
+            calcularICA(pm10, pm10Breakpoints),
+            calcularICA(ozone, ozoneBreakpoints),
+            calcularICA(nitrogenDioxide, nitrogenDioxideBreakpoints),
+            calcularICA(sulphurDioxide, sulphurDioxideBreakpoints),
+            calcularICA(
+              carbonMonoxide / 1000,
+              carbonMonoxideBreakpoints,
+            ), // hay que convertir µg/m³ a mg/m³
+          ];
+          final icaFinal = icas.whereType<int>().fold(
+            0,
+            (a, b) => a > b ? a : b,
+          );
+
+          dataToUse = {
+            "icas": icas,
+            "icaFinal": icaFinal,
+            "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          };
+
+          //Guardar caché
+          final success = await prefs.setString(
+            cacheKey,
+            json.encode(dataToUse),
+          );
+          debugPrint("¿Guardado ICA en caché?: $success");
+        }
+      } catch (e) {
+        debugPrint("Ha ocurrido un error al calcular la ICA: $e");
+      }
+    }
+
+    icaCache = dataToUse;
+    notifyListeners();
+  }
+}
+
+class Breakpoint {
+  final double clo;
+  final double chi;
+  final int ilo;
+  final int ihi;
+
+  Breakpoint(this.clo, this.chi, this.ilo, this.ihi);
 }

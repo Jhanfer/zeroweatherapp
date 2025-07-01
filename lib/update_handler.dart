@@ -160,7 +160,6 @@ class UpdateScreenState extends State<UpdateScreen> {
             'Accept': 'application/vnd.android.package-archive',
           },
         );
-        debugPrint("${url}");
 
         if (response.statusCode == 200) {
           // Obtener el directorio de descargas
