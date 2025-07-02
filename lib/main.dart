@@ -663,13 +663,14 @@ class IndexPage extends StatelessWidget {
           ),
         ),
         Card(
+          elevation: 10,
           color: Color.fromARGB(90, 10, 91, 119),
           child: SizedBox(
-            height: 90,
-            width: 350,
+            height: 70,
+            width: 340,
             child: Center(
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
                   Text(
                     "ICA: ${weatherState.icaCache!["icaFinal"]}",
@@ -680,6 +681,7 @@ class IndexPage extends StatelessWidget {
                     width: 200,
                     child: LinearProgressIndicator(
                       borderRadius: BorderRadius.all(Radius.circular(600)),
+                      backgroundColor: mainColor,
                       value:
                           ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
                               0) /
@@ -744,7 +746,7 @@ class StartPage extends StatelessWidget {
           : Center(
               child: Card(
                 color: Color.fromARGB(66, 10, 92, 119),
-                elevation: 10,
+                elevation: 100,
                 child: SizedBox(
                   width: 350,
                   height: 100,
@@ -789,24 +791,50 @@ class Cards extends StatelessWidget {
   var secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
   var titleTextColor = Color.fromARGB(255, 244, 240, 88);
 
-  Color _getColor(double uvIndex) {
+  String _getuvmessage(double uvIndex) {
     if (uvIndex >= 1.1) {
-      return Colors.deepPurple;
+      return "Extremo!";
     } else if (uvIndex >= 0.8) {
-      return Colors.red;
+      return "Demasiado alto";
     } else if (uvIndex >= 0.6) {
-      return Colors.orange;
+      return "Muy alto";
     } else if (uvIndex >= 0.3) {
-      return Colors.yellow;
+      return "Alto";
     } else if (uvIndex >= 0) {
-      return Colors.green;
+      return "Aceptable";
     } else {
-      return Colors.grey;
+      return "No disponible";
+    }
+  }
+
+  String _getDewPointClassification(double dewPoint, double temperature) {
+    if (temperature < 16.0 && dewPoint < 10.0) {
+      return "Frío y seco ❄️";
+    } else if (temperature < 24.0 && dewPoint < 16.0) {
+      return "Seco y cómodo 👌";
+    } else if (temperature < 28.0 && dewPoint >= 16.0 && dewPoint <= 20.0) {
+      return "Agradable 🙂";
+    } else if (temperature < 28.0 && dewPoint >= 20.0) {
+      return "Húmedo, pero templado 😅";
+    } else if (temperature >= 28.0 && dewPoint < 16.0) {
+      return "Calor seco 🥵";
+    } else if (temperature >= 28.0 && dewPoint >= 16.0 && dewPoint <= 20.0) {
+      return "Cálido con algo de humedad 🌡️";
+    } else if (temperature >= 30.0 && dewPoint >= 20.0 && dewPoint <= 24.0) {
+      return "Incomodidad moderada 🥵";
+    } else if (temperature >= 32.0 && dewPoint >= 24.0) {
+      return "Sofocante 🔥";
+    } else {
+      return "Sensación variable 🤔";
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final double uv =
+        (weatherState.forecastCachedData!["dailyUVIndexMax"][0] ?? 1)
+            .toDouble();
+    final double clampedUV = uv.clamp(0.0, 11.0);
     return Container(
       margin: const EdgeInsets.all(1),
       child: GridView.count(
@@ -818,39 +846,128 @@ class Cards extends StatelessWidget {
         childAspectRatio: (1 / 1.1),
         children: [
           Card(
+            elevation: 100,
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "Rayos UV: ${weatherState.forecastCachedData!["dailyUVIndexMax"][0]}",
-                    style: TextStyle(
+                    "Índice UV: ${weatherState.forecastCachedData!["dailyUVIndexMax"][0]}",
+                    style: GoogleFonts.kanit(
                       fontSize: fontCardSize,
-                      color: secondaryCardColor,
-                      fontWeight: FontWeight.w300,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                   Padding(
                     padding: EdgeInsetsGeometry.only(top: 50),
-                    child: SizedBox(
-                      height: 10,
-                      child: LinearProgressIndicator(
-                        borderRadius: BorderRadius.all(Radius.circular(600)),
-                        value:
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _getuvmessage(
                             (weatherState
-                                    .forecastCachedData!["dailyUVIndexMax"][0] ??
-                                1) /
-                            10,
-                        color: _getColor(
-                          (weatherState
-                                      .forecastCachedData!["dailyUVIndexMax"][0] ??
-                                  1) /
-                              10,
+                                        .forecastCachedData!["dailyUVIndexMax"][0] ??
+                                    1) /
+                                10,
+                          ),
+                          style: GoogleFonts.kanit(
+                            fontSize: 18,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                        backgroundColor: mainCardColor,
-                      ),
+                        SizedBox(
+                          height: 30,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Container(
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(100),
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Colors.green,
+                                      Colors.yellow,
+                                      Colors.orange,
+                                      Colors.red,
+                                      Colors.deepPurple,
+                                    ],
+                                    stops: [0, 0.3, 0.6, 0.8, 1.0],
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                left: clampedUV * 10,
+                                top: -4,
+                                child: Container(
+                                  width: 20,
+                                  height: 20,
+                                  decoration: BoxDecoration(
+                                    color: (() {
+                                      final ratio = (clampedUV / 11.0);
+                                      if (ratio < 0.3) {
+                                        return const Color.fromARGB(
+                                          255,
+                                          70,
+                                          160,
+                                          73,
+                                        );
+                                      }
+                                      if (ratio < 0.6) {
+                                        return const Color.fromARGB(
+                                          255,
+                                          206,
+                                          190,
+                                          49,
+                                        );
+                                      }
+                                      if (ratio < 0.8) {
+                                        return const Color.fromARGB(
+                                          255,
+                                          230,
+                                          138,
+                                          1,
+                                        );
+                                      }
+                                      if (ratio < 1.0) {
+                                        return const Color.fromARGB(
+                                          255,
+                                          221,
+                                          61,
+                                          49,
+                                        );
+                                      }
+                                      return Colors.deepPurple;
+                                    })(),
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 2,
+                                    ),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      "${weatherState.forecastCachedData!["dailyUVIndexMax"][0].toInt()}",
+                                      style: GoogleFonts.kanit(
+                                        height: -0.1,
+                                        fontSize: 16,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -859,18 +976,20 @@ class Cards extends StatelessWidget {
           ),
 
           Card(
+            elevation: 100,
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Text(
                     "Viento: ${weatherState.metarCacheData!["windSpeed"]} km/h",
-                    style: TextStyle(
+                    style: GoogleFonts.kanit(
                       fontSize: fontCardSize,
-                      color: secondaryCardColor,
-                      fontWeight: FontWeight.w300,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                   SizedBox(
@@ -1012,6 +1131,7 @@ class Cards extends StatelessWidget {
           ),
           Card(
             color: mainCardColor,
+            elevation: 100,
             child: Padding(
               padding: cardPadding,
               child: Column(
@@ -1019,10 +1139,10 @@ class Cards extends StatelessWidget {
                 children: [
                   Text(
                     "Presión: ${weatherState.metarCacheData!["pressure"]} hPa",
-                    style: TextStyle(
+                    style: GoogleFonts.kanit(
                       fontSize: fontCardSize,
-                      color: secondaryCardColor,
-                      fontWeight: FontWeight.w300,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                   Padding(
@@ -1048,44 +1168,19 @@ class Cards extends StatelessWidget {
 
           Card(
             color: mainCardColor,
-            child: Padding(
-              padding: cardPadding,
-              child: Text(
-                "Precipitación: ${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
-                style: TextStyle(
-                  fontSize: fontCardSize,
-                  color: secondaryCardColor,
-                  fontWeight: FontWeight.w300,
-                ),
-              ),
-            ),
-          ),
-          Card(
-            color: mainCardColor,
+            elevation: 100,
             child: Padding(
               padding: cardPadding,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Text(
-                    "Punto de rocío:",
-                    style: TextStyle(
+                    "Precipitación: ${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
+                    style: GoogleFonts.kanit(
                       fontSize: fontCardSize,
-                      color: secondaryCardColor,
-                      fontWeight: FontWeight.w300,
-                    ),
-                  ),
-                  SizedBox(
-                    height: 100,
-                    child: Center(
-                      child: Text(
-                        "${weatherState.metarCacheData!["dewPoint"]} °C",
-                        style: TextStyle(
-                          fontSize: 35,
-                          fontWeight: FontWeight.w300,
-                          color: titleTextColor,
-                        ),
-                      ),
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                 ],
@@ -1094,31 +1189,91 @@ class Cards extends StatelessWidget {
           ),
           Card(
             color: mainCardColor,
+            elevation: 100,
             child: Padding(
               padding: cardPadding,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "Humedad: ${weatherState.metarCacheData!["humidity"]} %",
-                    style: TextStyle(
+                    "Punto de rocío:",
+                    style: GoogleFonts.kanit(
                       fontSize: fontCardSize,
-                      color: secondaryCardColor,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  Text(
+                    _getDewPointClassification(
+                      weatherState.metarCacheData!["dewPoint"],
+                      weatherState.metarCacheData!["temperature"],
+                    ),
+                    style: GoogleFonts.kanit(
+                      fontSize: fontCardSize - 5,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  Text(
+                    "${weatherState.metarCacheData!["dewPoint"]} °C",
+                    style: TextStyle(
+                      fontSize: 30,
                       fontWeight: FontWeight.w300,
+                      color: titleTextColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          Card(
+            color: mainCardColor,
+            elevation: 100,
+            child: Padding(
+              padding: cardPadding,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Humedad: ",
+                    style: GoogleFonts.kanit(
+                      fontSize: fontCardSize,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                   Padding(
-                    padding: EdgeInsetsGeometry.only(top: 30),
-                    child: SizedBox(
-                      height: 10,
-                      child: LinearProgressIndicator(
-                        borderRadius: BorderRadius.all(Radius.circular(600)),
-                        value:
-                            (weatherState.metarCacheData!["humidity"] ?? 1) /
-                            100,
-                        color: secondaryCardColor,
-                        backgroundColor: mainCardColor,
-                      ),
+                    padding: EdgeInsetsGeometry.only(top: 50),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "${weatherState.metarCacheData!["humidity"]} %",
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize + 2,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                        SizedBox(
+                          height: 10,
+                          child: LinearProgressIndicator(
+                            borderRadius: BorderRadius.all(
+                              Radius.circular(600),
+                            ),
+                            value:
+                                (weatherState.metarCacheData!["humidity"] ??
+                                    1) /
+                                100,
+                            color: secondaryCardColor,
+                            backgroundColor: mainCardColor,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
