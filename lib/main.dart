@@ -551,8 +551,10 @@ class IndexPage extends StatelessWidget {
                           LineChartData(
                             minX: 0,
                             maxX: spots.length - 1,
-                            minY: (tempByHours.first) - 10,
+                            minY: (tempByHours.first) - 20,
                             maxY: (tempByHours.first) + 40,
+                            //minY: 0,
+                            //maxY: 100,
                             gridData: FlGridData(show: false),
                             borderData: FlBorderData(show: false),
                             clipData: FlClipData.none(),
@@ -571,10 +573,15 @@ class IndexPage extends StatelessWidget {
                                         final temp = barSpot.y.toStringAsFixed(
                                           1,
                                         ); // temperatura
+                                        final precip =
+                                            precipitation[barSpot.spotIndex]
+                                                .toInt(); // precipitación
 
                                         return LineTooltipItem(
-                                          "$hour H\n$temp°C",
-                                          const TextStyle(color: Colors.white),
+                                          "$hour H\n $temp°C\n💧 $precip%",
+                                          GoogleFonts.kanit(
+                                            color: Colors.white,
+                                          ),
                                         );
                                       }).toList();
                                     },
@@ -605,26 +612,9 @@ class IndexPage extends StatelessWidget {
                               bottomTitles: AxisTitles(
                                 sideTitles: SideTitles(
                                   reservedSize: 40,
-                                  showTitles: true,
+                                  showTitles: false,
                                   getTitlesWidget: (value, meta) {
-                                    final index = value.round();
-                                    if (index < 0 ||
-                                        index >= precipitation.length) {
-                                      return const SizedBox();
-                                    }
-
-                                    return SideTitleWidget(
-                                      axisSide: meta.axisSide,
-                                      space: 10,
-                                      child: Text(
-                                        "${precipitation[index].toInt()}%",
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    );
+                                    return Text("");
                                   },
                                 ),
                               ),
@@ -801,7 +791,7 @@ class Cards extends StatelessWidget {
     } else if (uvIndex >= 0.3) {
       return "Alto";
     } else if (uvIndex >= 0) {
-      return "Aceptable";
+      return "Bajo";
     } else {
       return "No disponible";
     }
@@ -809,23 +799,23 @@ class Cards extends StatelessWidget {
 
   String _getDewPointClassification(double dewPoint, double temperature) {
     if (temperature < 16.0 && dewPoint < 10.0) {
-      return "Frío y seco ❄️";
+      return "Frío y seco";
     } else if (temperature < 24.0 && dewPoint < 16.0) {
-      return "Seco y cómodo 👌";
-    } else if (temperature < 28.0 && dewPoint >= 16.0 && dewPoint <= 20.0) {
-      return "Agradable 🙂";
+      return "Seco y cómodo";
+    } else if (temperature < 28.0 && dewPoint >= 16.0 && dewPoint < 20.0) {
+      return "Agradable";
     } else if (temperature < 28.0 && dewPoint >= 20.0) {
-      return "Húmedo, pero templado 😅";
+      return "Húmedo, pero templado";
     } else if (temperature >= 28.0 && dewPoint < 16.0) {
-      return "Calor seco 🥵";
-    } else if (temperature >= 28.0 && dewPoint >= 16.0 && dewPoint <= 20.0) {
-      return "Cálido con algo de humedad 🌡️";
-    } else if (temperature >= 30.0 && dewPoint >= 20.0 && dewPoint <= 24.0) {
-      return "Incomodidad moderada 🥵";
-    } else if (temperature >= 32.0 && dewPoint >= 24.0) {
-      return "Sofocante 🔥";
+      return "Calor seco";
+    } else if (temperature >= 28.0 && dewPoint >= 16.0 && dewPoint < 20.0) {
+      return "Cálido con algo de humedad";
+    } else if (temperature >= 28.0 && dewPoint >= 20.0 && dewPoint < 24.0) {
+      return "Incomodidad moderada";
+    } else if (temperature >= 30.0 && dewPoint >= 24.0) {
+      return "Sofocante";
     } else {
-      return "Sensación variable 🤔";
+      return "Sensación variable";
     }
   }
 
