@@ -48,6 +48,7 @@ dependencies:
   csv: ^6.0.0
   flutter_launcher_icons: "^0.13.1"
   flutter_native_splash: "^2.3.11"
+  weather_icons: "3.0.0"
 
 
 flutter_launcher_icons:

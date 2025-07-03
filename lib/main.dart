@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
+import 'package:weather_icons/weather_icons.dart';
 import 'update_handler.dart';
 import 'metar_weather_api.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -334,7 +335,6 @@ class IndexPage extends StatelessWidget {
   final List<double> precipitation;
 
   Color _getColor(double ica) {
-    debugPrint("$ica");
     if (ica >= 3.01) {
       return Color.fromARGB(255, 126, 0, 35);
     } else if (ica >= 2.01) {
@@ -781,19 +781,19 @@ class Cards extends StatelessWidget {
   var secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
   var titleTextColor = Color.fromARGB(255, 244, 240, 88);
 
-  String _getuvmessage(double uvIndex) {
+  Map<String, String> _getuvmessage(double uvIndex) {
     if (uvIndex >= 1.1) {
-      return "Extremo!";
+      return {"Extremo!": "¡Peligro! Quédate en interiores"};
     } else if (uvIndex >= 0.8) {
-      return "Demasiado alto";
+      return {"Demasiado alto": "Evita la exposición al sol"};
     } else if (uvIndex >= 0.6) {
-      return "Muy alto";
+      return {"Muy alto": "Minimiza la exposición al sol"};
     } else if (uvIndex >= 0.3) {
-      return "Alto";
+      return {"Alto": "Poca precaución es necesaria"};
     } else if (uvIndex >= 0) {
-      return "Bajo";
+      return {"Bajo": "No se requiere protección especial"};
     } else {
-      return "No disponible";
+      return {"Error": "Datos no disponibles"};
     }
   }
 
@@ -803,7 +803,7 @@ class Cards extends StatelessWidget {
     } else if (temperature < 24.0 && dewPoint < 16.0) {
       return "Seco y cómodo";
     } else if (temperature < 28.0 && dewPoint >= 16.0 && dewPoint < 20.0) {
-      return "Agradable";
+      return "Se está agradable";
     } else if (temperature < 28.0 && dewPoint >= 20.0) {
       return "Húmedo, pero templado";
     } else if (temperature >= 28.0 && dewPoint < 16.0) {
@@ -813,9 +813,66 @@ class Cards extends StatelessWidget {
     } else if (temperature >= 28.0 && dewPoint >= 20.0 && dewPoint < 24.0) {
       return "Incomodidad moderada";
     } else if (temperature >= 30.0 && dewPoint >= 24.0) {
-      return "Sofocante";
+      return "Se siente sofocante";
     } else {
       return "Sensación variable";
+    }
+  }
+
+  Map<String, String> _getPressureAlertMessage(double pressureHpa) {
+    if (pressureHpa >= 1030.0) {
+      return {"Muy Alta": "Tiempo muy estable"};
+    } else if (pressureHpa >= 1018.0) {
+      return {"Alta": "Tiempo estable y soleado"};
+    } else if (pressureHpa >= 1008.0) {
+      return {"Normal": "Condiciones meteorológicas típicas"};
+    } else if (pressureHpa >= 995.0) {
+      return {"Baja": "Puede esperarse lluvia, viento o cielos cubiertos."};
+    } else if (pressureHpa < 995.0) {
+      return {
+        "Muy Baja":
+            "Tiempo inestable y severo, con vientos fuertes o tormentas",
+      };
+    } else {
+      return {"Error": "Datos no disponibles"};
+    }
+  }
+
+  Map<String, String> _getPrecipitationMessage(double precipitationMm) {
+    if (precipitationMm > 20.0) {
+      return {
+        "Lluvia Extrema":
+            "¡Alerta! Posibles inundaciones, condiciones de conducción peligrosas",
+      };
+    } else if (precipitationMm > 8.0) {
+      return {
+        "Lluvia Fuerte":
+            "Lluvias intensas esperadas. Considera reducir la velocidad al conducir",
+      };
+    } else if (precipitationMm > 2.5) {
+      return {"Lluvia Moderada": "Lluvias continuas. Ten tu paraguas a mano"};
+    } else if (precipitationMm > 0.0) {
+      return {"Lluvia Ligera": "Posibilidad de llovizna o lluvia débil"};
+    } else if (precipitationMm == 0.0) {
+      return {"Sin Lluvia": "No se espera precipitación"};
+    } else {
+      return {"Error": "Datos no disponibles"};
+    }
+  }
+
+  Map<String, String> _getHumidityMessage(double humidity) {
+    if (humidity >= 70.0) {
+      return {"Muy Alta": "Tiempo muy húmedo"};
+    } else if (humidity >= 50.0) {
+      return {"Alta": "Humedad considerable"};
+    } else if (humidity >= 20.0) {
+      return {"Moderada": "Niveles de humedad confortables"};
+    } else if (humidity >= 10.0) {
+      return {"Baja": "Aire bastante seco"};
+    } else if (humidity < 10.0) {
+      return {"Muy Baja": "Aire extremadamente seco"};
+    } else {
+      return {"Error": "Datos no disponibles"};
     }
   }
 
@@ -830,7 +887,7 @@ class Cards extends StatelessWidget {
       child: GridView.count(
         crossAxisCount: 2,
         mainAxisSpacing: 10,
-        padding: EdgeInsets.all(30),
+        padding: EdgeInsets.all(20),
         shrinkWrap: true,
         physics: NeverScrollableScrollPhysics(),
         childAspectRatio: (1 / 1.1),
@@ -844,16 +901,29 @@ class Cards extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Row(
+                    children: [
+                      Text(
+                        "Índice UV ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      Icon(Icons.sunny, color: Colors.white, size: 15),
+                    ],
+                  ),
                   Text(
-                    "Índice UV: ${weatherState.forecastCachedData!["dailyUVIndexMax"][0]}",
-                    style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    _getuvmessage(
+                      (weatherState.forecastCachedData!["dailyUVIndexMax"][0] ??
+                              1) /
+                          10,
+                    ).entries.first.value,
+                    style: GoogleFonts.kanit(fontSize: 17, color: Colors.white),
                   ),
                   Padding(
-                    padding: EdgeInsetsGeometry.only(top: 50),
+                    padding: EdgeInsetsGeometry.only(top: 5),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.start,
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -864,9 +934,9 @@ class Cards extends StatelessWidget {
                                         .forecastCachedData!["dailyUVIndexMax"][0] ??
                                     1) /
                                 10,
-                          ),
+                          ).keys.first,
                           style: GoogleFonts.kanit(
-                            fontSize: 18,
+                            fontSize: fontCardSize,
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
                           ),
@@ -974,14 +1044,27 @@ class Cards extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
+                  Row(
+                    children: [
+                      Text(
+                        "Viento ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 13,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      Icon(WeatherIcons.windy, color: Colors.white, size: 15),
+                    ],
+                  ),
                   Text(
-                    "Viento: ${weatherState.metarCacheData!["windSpeed"]} km/h",
+                    "${weatherState.metarCacheData!["windSpeed"]} km/h",
                     style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
                       color: Colors.white,
-                      fontWeight: FontWeight.w400,
+                      fontSize: fontCardSize,
                     ),
                   ),
+
                   SizedBox(
                     height: 90,
                     width: 90,
@@ -1127,90 +1210,62 @@ class Cards extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  Text(
-                    "Presión: ${weatherState.metarCacheData!["pressure"]} hPa",
-                    style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsetsGeometry.only(top: 30),
-                    child: SizedBox(
-                      height: 10,
-                      child: LinearProgressIndicator(
-                        borderRadius: BorderRadius.all(Radius.circular(600)),
-                        value:
-                            (double.parse(
-                              weatherState.metarCacheData!["pressure"],
-                            )) /
-                            2000,
-                        color: secondaryCardColor,
-                        backgroundColor: mainCardColor,
+                  Row(
+                    children: [
+                      Text(
+                        "Presión ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 13,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
                       ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          Card(
-            color: mainCardColor,
-            elevation: 100,
-            child: Padding(
-              padding: cardPadding,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Text(
-                    "Precipitación: ${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
-                    style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Card(
-            color: mainCardColor,
-            elevation: 100,
-            child: Padding(
-              padding: cardPadding,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    "Punto de rocío:",
-                    style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w400,
-                    ),
+                      Icon(
+                        WeatherIcons.barometer,
+                        color: Colors.white,
+                        size: 15,
+                      ),
+                    ],
                   ),
                   Text(
-                    _getDewPointClassification(
-                      weatherState.metarCacheData!["dewPoint"],
-                      weatherState.metarCacheData!["temperature"],
-                    ),
-                    style: GoogleFonts.kanit(
-                      fontSize: fontCardSize - 5,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    _getPressureAlertMessage(
+                      double.parse(weatherState.metarCacheData!["pressure"]),
+                    ).values.first,
+                    style: GoogleFonts.kanit(fontSize: 13, color: Colors.white),
                   ),
-                  Text(
-                    "${weatherState.metarCacheData!["dewPoint"]} °C",
-                    style: TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.w300,
-                      color: titleTextColor,
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 10),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _getPressureAlertMessage(
+                            double.parse(
+                              weatherState.metarCacheData!["pressure"],
+                            ),
+                          ).keys.first,
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(
+                          height: 10,
+                          child: LinearProgressIndicator(
+                            borderRadius: BorderRadius.all(
+                              Radius.circular(600),
+                            ),
+                            value:
+                                (double.parse(
+                                  weatherState.metarCacheData!["pressure"],
+                                )) /
+                                2000,
+                            color: secondaryCardColor,
+                            backgroundColor: mainCardColor,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -1227,16 +1282,159 @@ class Cards extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Row(
+                    children: [
+                      Text(
+                        "Precipitación ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      Icon(
+                        WeatherIcons.raindrops,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ],
+                  ),
                   Text(
-                    "Humedad: ",
+                    _getPrecipitationMessage(
+                      weatherState
+                          .forecastCachedData!["precipitationByHours"][0],
+                    ).values.first,
                     style: GoogleFonts.kanit(
-                      fontSize: fontCardSize,
+                      fontSize: 15,
                       color: Colors.white,
                       fontWeight: FontWeight.w400,
                     ),
                   ),
                   Padding(
-                    padding: EdgeInsetsGeometry.only(top: 50),
+                    padding: EdgeInsetsGeometry.only(top: 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      children: [
+                        Text(
+                          _getPrecipitationMessage(
+                            weatherState
+                                .forecastCachedData!["precipitationByHours"][0],
+                          ).keys.first,
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                        Text(
+                          "${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Card(
+            color: mainCardColor,
+            elevation: 100,
+            child: Padding(
+              padding: cardPadding,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        "Punto de rocío ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      Icon(Icons.dew_point, color: Colors.white, size: 15),
+                    ],
+                  ),
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 20),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _getDewPointClassification(
+                            weatherState.metarCacheData!["dewPoint"],
+                            weatherState.metarCacheData!["temperature"],
+                          ),
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                        Text(
+                          "${weatherState.metarCacheData!["dewPoint"]} °C",
+                          style: TextStyle(
+                            fontSize: 30,
+                            fontWeight: FontWeight.w300,
+                            color: titleTextColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          Card(
+            color: mainCardColor,
+            elevation: 100,
+            child: Padding(
+              padding: cardPadding,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        "Humedad: ",
+                        style: GoogleFonts.kanit(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      Icon(
+                        WeatherIcons.humidity,
+                        color: Colors.white,
+                        size: 13,
+                      ),
+                    ],
+                  ),
+                  Text(
+                    _getHumidityMessage(
+                      (weatherState.metarCacheData!["humidity"] ?? 1),
+                    ).values.first,
+                    style: GoogleFonts.kanit(
+                      fontSize: 18,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  Padding(
+                    padding: EdgeInsetsGeometry.only(top: 6),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.start,
                       crossAxisAlignment: CrossAxisAlignment.start,

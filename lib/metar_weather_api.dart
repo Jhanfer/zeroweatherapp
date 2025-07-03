@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:async';
 
+import 'package:weather_icons/weather_icons.dart';
+
 class Station {
   final String code;
   final double latitude;
@@ -57,12 +59,12 @@ class WeatherService with ChangeNotifier {
   };
 
   final _cloudDescriptionPoints = {
-    0: {"despejado": Icons.wb_sunny},
-    15: {"mayormente despejado": Icons.wb_sunny},
-    40: {"parcialmente nublado": Icons.wb_cloudy},
-    65: {"mayormente nublado": Icons.cloud},
-    85: {"muy nublado": Icons.cloud_queue},
-    100: {"completamente nublado": Icons.cloud},
+    0: {"despejado": WeatherIcons.day_sunny},
+    15: {"mayormente despejado": WeatherIcons.day_cloudy_high},
+    40: {"parcialmente nublado": WeatherIcons.day_cloudy},
+    65: {"mayormente nublado": WeatherIcons.cloudy_gusts},
+    85: {"muy nublado": WeatherIcons.cloudy},
+    100: {"completamente nublado": WeatherIcons.cloudy_windy},
   };
   var cloudDescription = {};
   var appPermission = true;
