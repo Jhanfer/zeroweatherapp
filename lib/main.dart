@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,11 +14,39 @@ import 'update_handler.dart';
 import 'metar_weather_api.dart';
 import 'package:fl_chart/fl_chart.dart';
 
+@pragma("vm:entry-point")
+void downloadCallback(String id, int status, int progress) {
+  final SendPort? send = IsolateNameServer.lookupPortByName(
+    "downloader_send_port",
+  );
+  if (send != null) {
+    send.send([id, status, progress]);
+  } else {
+    debugPrint("DownloadCallback: No se encontró el puerto de envío");
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await FlutterDownloader.initialize(debug: true);
+  await FlutterDownloader.initialize(debug: false);
   FlutterDownloader.registerCallback(downloadCallback);
+
+  // Configuramos el ReceivePort globalmente
+  final ReceivePort port = ReceivePort();
+  final String portName = "downloader_send_port";
+
+  if (IsolateNameServer.lookupPortByName(portName) != null) {
+    debugPrint(
+      "ADVERTENCIA: Se encontró un SendPort existente con el nombre '$portName'. Removiendo para registrar el nuestro.",
+    );
+    IsolateNameServer.removePortNameMapping(portName);
+  }
+
+  IsolateNameServer.registerPortWithName(port.sendPort, portName);
+
+  // Pasamos el ReceivePort a UpdateHandler
+  UpdateScreenState().initialize(port);
 
   runApp(const MyApp());
 }
@@ -31,6 +61,7 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => WeatherService()),
         ChangeNotifierProvider(create: (_) => Checkers()),
+        ChangeNotifierProvider(create: (_) => UpdateScreenState()),
       ],
       child: MaterialApp(
         title: "zeroweather",
@@ -164,8 +195,10 @@ class _MyHomePageState extends State<MyHomePage> {
     });
     final update = UpdateScreenState();
     update.checkForUpdates();
+    bool _dialogShown = false;
 
     update.eventStream.listen((event) {
+      debugPrint("Cargando evento: $event");
       if (event.keys.first == "show_update_dialog") {
         showDialog(
           context: context,
@@ -184,11 +217,90 @@ class _MyHomePageState extends State<MyHomePage> {
               TextButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  update.downloadAndInstallApk();
+                  update.downloadAndInstallApkAlt();
                 },
                 child: Text("Actualizar"),
               ),
             ],
+          ),
+        );
+      } else if (event.containsKey("show_donwload_progress") && !_dialogShown) {
+        _dialogShown = true;
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => StreamBuilder<Map>(
+            stream: update.downloadEventStream,
+            builder: (context, snapshot) {
+              String status = "Descargando actualización...";
+              double progress = 0.0;
+
+              if (snapshot.hasData) {
+                if (snapshot.data!.containsKey("id")) {
+                  final eventStatus = snapshot.data!["status"] as int;
+                  final eventProgress = snapshot.data!["progress"] as int;
+                  progress = eventProgress / 100.0;
+                  status = eventStatus == DownloadTaskStatus.running.index
+                      ? "Descargando... ${eventProgress}%"
+                      : eventStatus == DownloadTaskStatus.complete.index
+                      ? "Descarga completada, instalando..."
+                      : eventStatus == DownloadTaskStatus.failed.index
+                      ? "Error: Falló la descarga del APK"
+                      : "Descarga cancelada";
+
+                  if (eventStatus == DownloadTaskStatus.failed.index ||
+                      eventStatus == DownloadTaskStatus.canceled.index) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (Navigator.canPop(context)) {
+                        Navigator.pop(context);
+                        _dialogShown = false;
+                      }
+                    });
+                  }
+                } else if (snapshot.data!.containsKey("error")) {
+                  status = snapshot.data!["error"] as String;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (Navigator.canPop(context)) {
+                      Navigator.pop(context);
+                      _dialogShown = false;
+                    }
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(status)));
+                  });
+                }
+              }
+
+              return AlertDialog(
+                title: const Text("Descargando actualización"),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(status), // Mostrar el progreso dinámicamente
+                    const SizedBox(height: 10),
+                    LinearProgressIndicator(value: progress),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      FlutterDownloader.cancelAll();
+                      _dialogShown = false;
+                      Navigator.pop(context);
+                    },
+                    child: const Text("Cancelar"),
+                  ),
+                  ?status == "Descarga completada, instalando..."
+                      ? TextButton(
+                          onPressed: () {
+                            update.installApk();
+                          },
+                          child: Text("Instalar Actualización"),
+                        )
+                      : null,
+                ],
+              );
+            },
           ),
         );
       }

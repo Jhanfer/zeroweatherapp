@@ -2,7 +2,8 @@
 <!--Se crea la carpeta y el archivo file_path.xml-->
 <!--Esto define las rutas de los archivos que el FileProvider puede compartir-->
 <paths>
-    <!--Indica que los archivos que se encuentran en el directorio externo son los accesibles-->
-    <external-files-path name="files" path="." />
-    <!--El name="files" es un alias interno, y path="." significa que se incluye todo el contenido de ese directorio-->
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    <external-path name="external_files" path="." />
 </paths>
