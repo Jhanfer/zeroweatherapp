@@ -6,6 +6,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
@@ -117,7 +118,9 @@ class Checkers with ChangeNotifier {
     LocationPermission permission;
     try {
       //verificar si el servicio de ubicación está activo
-      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      serviceEnabled = await Geolocator.isLocationServiceEnabled().timeout(
+        Duration(seconds: 10),
+      );
       if (!serviceEnabled) {
         throw Exception("El servicio de ubicación no está habilitado.");
       } else {}
@@ -134,7 +137,6 @@ class Checkers with ChangeNotifier {
           "No se han concedido los permisos de ubicación de manera permanente.",
         );
       }
-
       appPermission = true;
       notifyListeners();
     } catch (e) {
@@ -169,6 +171,12 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  double _dayProgress = 0.0;
+  Color _mainColor = const Color.fromARGB(255, 10, 91, 119);
+  Color _titleTextColor = const Color.fromARGB(255, 244, 240, 88);
+  Color _secondaryColor = const Color.fromARGB(255, 2, 1, 34);
+  bool _isLoading = true;
+
   @override
   void initState() {
     super.initState();
@@ -176,23 +184,48 @@ class _MyHomePageState extends State<MyHomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initAsyncStuff();
     });
+    Timer.periodic(const Duration(seconds: 1), (timer) {
+      _updateDayProgressAndColors();
+      setState(() {
+        _isLoading = false;
+        _updateDayProgressAndColors();
+      });
+    });
   }
 
   Future<void> _initAsyncStuff() async {
+    setState(() {
+      _isLoading = true;
+    });
+
     final checkers = context.read<Checkers>();
     final newWeatherService = context.read<WeatherService>();
-    checkers.checkPermissions().then((_) {
-      checkers.checkInternet();
-      newWeatherService.getPosition().then((_) {
-        newWeatherService.loadStation().then((_) {
-          newWeatherService.findNerbyStation();
-          newWeatherService.getForecast().then((_) {
-            newWeatherService.fetchMetarData();
-            newWeatherService.getICA();
-          });
-        });
-      });
+
+    try {
+      await checkers.checkPermissions();
+      await checkers.checkInternet();
+      await Future.wait([
+        newWeatherService.getPosition(),
+        newWeatherService.loadStation(),
+      ]);
+      await newWeatherService.findNerbyStation();
+      await Future.wait(
+        [
+              newWeatherService.getForecast(),
+              newWeatherService.fetchMetarData(),
+              newWeatherService.getICA(),
+            ]
+            as Iterable<Future>,
+      );
+    } catch (e) {
+      debugPrint("Error en _initAsyncStuff: $e");
+    }
+
+    setState(() {
+      _isLoading = false;
+      _updateDayProgressAndColors();
     });
+
     final update = UpdateScreenState();
     update.checkForUpdates();
     bool _dialogShown = false;
@@ -241,7 +274,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   final eventProgress = snapshot.data!["progress"] as int;
                   progress = eventProgress / 100.0;
                   status = eventStatus == DownloadTaskStatus.running.index
-                      ? "Descargando... ${eventProgress}%"
+                      ? "Descargando... $eventProgress%"
                       : eventStatus == DownloadTaskStatus.complete.index
                       ? "Descarga completada, instalando..."
                       : eventStatus == DownloadTaskStatus.failed.index
@@ -328,113 +361,253 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
+  void _updateDayProgressAndColors() {
+    final forecastData = context.read<WeatherService>().forecastCachedData;
+    final cloudDescription = context.read<WeatherService>().cloudDescription;
+
+    //Valores por defecto
+    double dayProgress = 0.0;
+    var sunrise = DateTime.now();
+    var sunset = DateTime.now().add(const Duration(hours: 12));
+
+    if (forecastData != null &&
+        forecastData.isNotEmpty &&
+        cloudDescription.isNotEmpty) {
+      try {
+        //se intenta parsear los datos de amanecer y atardecer
+        sunrise = DateTime.parse(forecastData["dailySunrise"]);
+        sunset = DateTime.parse(forecastData["dailySunset"]);
+        final totalDuration = sunset.difference(sunrise).inMinutes;
+        final currentDuration = DateTime.now()
+            .difference(sunrise)
+            .inMinutes
+            .clamp(0, totalDuration);
+        // se saca la duración del día y se calcula el porcentaje de día
+        dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
+      } catch (e) {
+        debugPrint("Error parseando las horas de amanecer y atardecer $e");
+      }
+    } else {
+      // Valores por defecto: amanecer a las 6:00 AM, atardecer a las 6:00 PM
+      final now = DateTime.now();
+      sunrise = DateTime(now.year, now.month, now.day, 6, 0);
+      sunset = DateTime(now.year, now.month, now.day, 18, 0);
+      final totalDuration = sunset.difference(sunrise).inMinutes;
+      final currentDuration = now
+          .difference(sunrise)
+          .inMinutes
+          .clamp(0, totalDuration);
+      dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
+    }
+
+    // Solo se actualiza si el cambio es significativo
+    if ((dayProgress - _dayProgress).abs() > 0.01) {
+      _dayProgress = dayProgress;
+    }
+
+    // Interpolación de colores para mainColor
+    if (_dayProgress < 0.5) {
+      _mainColor =
+          Color.lerp(
+            const Color.fromARGB(255, 10, 91, 119), // Amanecer
+            const Color.fromARGB(255, 0, 128, 128), // Mediodía
+            _dayProgress * 2,
+          ) ??
+          const Color.fromARGB(255, 0, 128, 128);
+    } else if (_dayProgress < 0.75) {
+      _mainColor =
+          Color.lerp(
+            const Color.fromARGB(255, 0, 128, 128), // Mediodía
+            const Color.fromARGB(255, 139, 69, 19), // Atardecer
+            (_dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(255, 0, 128, 128);
+    } else {
+      _mainColor =
+          Color.lerp(
+            const Color.fromARGB(255, 139, 69, 19), // Atardecer
+            const Color.fromARGB(255, 175, 175, 216), // Noche
+            (_dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(255, 100, 100, 160);
+    }
+
+    // Interpolación de colores para titleTextColor
+    if (_dayProgress < 0.5) {
+      _titleTextColor =
+          Color.lerp(
+            const Color.fromARGB(255, 244, 240, 88), // Amanecer
+            const Color.fromARGB(255, 255, 215, 0), // Mediodía
+            _dayProgress * 2,
+          ) ??
+          const Color.fromARGB(255, 255, 215, 0);
+    } else if (_dayProgress < 0.75) {
+      _titleTextColor =
+          Color.lerp(
+            const Color.fromARGB(255, 255, 215, 0), // Mediodía
+            const Color.fromARGB(255, 255, 99, 71), // Atardecer
+            (_dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(255, 255, 215, 0);
+    } else {
+      _titleTextColor =
+          Color.lerp(
+            const Color.fromARGB(255, 255, 99, 71), // Atardecer
+            const Color.fromARGB(255, 200, 200, 255), // Noche
+            (_dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(255, 200, 200, 255);
+    }
+
+    // Interpolación de colores para secondaryColor
+    if (_dayProgress < 0.5) {
+      _secondaryColor =
+          Color.lerp(
+            const Color.fromARGB(255, 2, 1, 34), // Amanecer
+            const Color.fromARGB(255, 25, 25, 112), // Mediodía
+            _dayProgress * 2,
+          ) ??
+          const Color.fromARGB(255, 25, 25, 112);
+    } else if (_dayProgress < 0.75) {
+      _secondaryColor =
+          Color.lerp(
+            const Color.fromARGB(255, 25, 25, 112), // Mediodía
+            const Color.fromARGB(255, 128, 0, 0), // Atardecer
+            (_dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(255, 25, 25, 112);
+    } else {
+      _secondaryColor =
+          Color.lerp(
+            const Color.fromARGB(255, 128, 0, 0), // Atardecer
+            const Color.fromARGB(255, 120, 120, 180), // Noche
+            (_dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(255, 120, 120, 180);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    var newWeatherApi = context.watch<WeatherService>();
-    var temp = newWeatherApi.metarCacheData!["temperature"].toString();
-    var separatedTemp = temp.split(".");
+    return Consumer<WeatherService>(
+      builder: (context, weatherService, child) {
+        _updateDayProgressAndColors();
 
-    var mainColor = Color.fromARGB(255, 10, 91, 119);
-    var backgroundColor = Color.fromARGB(255, 40, 159, 208);
-    var titleTextColor = Color.fromARGB(255, 244, 240, 88);
-    var secondaryColor = Color.fromARGB(255, 2, 1, 34);
+        final metarData = weatherService.metarCacheData;
+        //final forecastData = weatherService.forecastCachedData;
 
-    var tempByHours = newWeatherApi.forecastCachedData!["tempByHours"];
-    var hours = newWeatherApi.forecastCachedData!["tempHours"];
-    var dates = newWeatherApi.forecastCachedData!["dates"];
-    var precipitation =
-        newWeatherApi.forecastCachedData!["precipitationByHours"];
+        if (metarData == null || metarData.isEmpty) {
+          return Scaffold(
+            backgroundColor: Colors.transparent,
+            body: MovingCloudsBackground(
+              dayProgress: _dayProgress,
+              child: Center(
+                child: StartPage(
+                  mainColor: _mainColor,
+                  secondaryColor: _secondaryColor,
+                ),
+              ),
+            ),
+          );
+        }
 
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      body: Stack(
-        children: [
-          Positioned.fill(child: MovingCloudsBackground()),
-          newWeatherApi.metarCacheData!.isEmpty
-              ? StartPage(mainColor: mainColor, secondaryColor: secondaryColor)
-              : RefreshIndicator(
-                  color: titleTextColor,
-                  backgroundColor: mainColor,
-                  displacement: 20.0,
-                  edgeOffset: -10,
-                  onRefresh: () async {
-                    await newWeatherApi.getPrecisePosition().then((_) {
-                      newWeatherApi.findNerbyStation();
-                      newWeatherApi.getForecast();
-                      newWeatherApi.fetchMetarData();
-                      newWeatherApi.getICA();
-                    });
-                  },
-                  child: CustomScrollView(
-                    slivers: [
-                      SliverToBoxAdapter(
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            minHeight: MediaQuery.of(context).size.height,
-                          ),
-                          child: Align(
-                            alignment: Alignment.center,
-                            child: Container(
-                              padding: EdgeInsets.only(top: 90),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.max,
-                                // La linea de "weatherState.temp.isEmpty ? const CircularProgressIndicator(): Row" es como si hicieramos un "widget = CircularProgressIndicator() if temp == "" else Column(...)" en python. es un if de una sola linea.
-                                children: [
-                                  IndexPage(
-                                    weatherState: newWeatherApi,
-                                    mainColor: mainColor,
-                                    separatedTemp: separatedTemp,
-                                    secondaryColor: secondaryColor,
-                                    hours: (hours as List<dynamic>)
-                                        .map((e) => e as int)
-                                        .toList(),
-                                    tempByHours: (tempByHours as List<dynamic>)
-                                        .map((e) => e as double)
-                                        .toList(),
-                                    titleTextColor: titleTextColor,
-                                    dates: (dates as List<dynamic>)
-                                        .map((e) => DateTime.parse(e))
-                                        .toList(),
-                                    precipitation:
-                                        (precipitation as List<dynamic>)
-                                            .map((e) => e as double)
-                                            .toList(),
-                                  ),
-                                ],
-                              ),
+        var newWeatherApi = context.watch<WeatherService>();
+
+        var temp = newWeatherApi.metarCacheData!["temperature"].toString();
+        var separatedTemp = temp.split(".");
+        var tempByHours = newWeatherApi.forecastCachedData!["tempByHours"];
+        var hours = newWeatherApi.forecastCachedData!["tempHours"];
+        var dates = newWeatherApi.forecastCachedData!["dates"];
+        var precipitation =
+            newWeatherApi.forecastCachedData!["precipitationByHours"];
+
+        var sunrise = DateTime.parse(
+          newWeatherApi.forecastCachedData!["dailySunrise"],
+        );
+        var sunset = DateTime.parse(
+          newWeatherApi.forecastCachedData!["dailySunset"],
+        );
+
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          body: MovingCloudsBackground(
+            dayProgress: _dayProgress,
+            child: RefreshIndicator(
+              color: _titleTextColor,
+              backgroundColor: _mainColor,
+              displacement: 20.0,
+              edgeOffset: -10,
+              onRefresh: () async {
+                await newWeatherApi.getPrecisePosition().then((_) {
+                  newWeatherApi.findNerbyStation();
+                  newWeatherApi.getForecast();
+                  newWeatherApi.fetchMetarData();
+                  newWeatherApi.getICA();
+                  _updateDayProgressAndColors();
+                });
+              },
+              child: CustomScrollView(
+                slivers: [
+                  SliverList(
+                    delegate: SliverChildListDelegate([
+                      Padding(
+                        padding: EdgeInsets.only(top: 90),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.max,
+                          children: [
+                            IndexPage(
+                              weatherState: newWeatherApi,
+                              mainColor: _mainColor,
+                              separatedTemp: separatedTemp,
+                              secondaryColor: _secondaryColor,
+                              dayProgress: _dayProgress,
+                              sunset: sunset,
+                              sunrise: sunrise,
+                              hours: (hours as List<dynamic>)
+                                  .map((e) => e as int)
+                                  .toList(),
+                              tempByHours: (tempByHours as List<dynamic>)
+                                  .map((e) => e as double)
+                                  .toList(),
+                              titleTextColor: _titleTextColor,
+                              dates: (dates as List<dynamic>)
+                                  .map((e) => DateTime.parse(e))
+                                  .toList(),
+                              precipitation: (precipitation as List<dynamic>)
+                                  .map((e) => e as double)
+                                  .toList(),
                             ),
-                          ),
+                          ],
                         ),
                       ),
-                    ],
+                    ]),
                   ),
-                ),
-        ],
-      ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
 
-class IndexPage extends StatelessWidget {
+class IndexPage extends StatefulWidget {
   const IndexPage({
     super.key,
     required this.weatherState,
     required this.mainColor,
-    required this.separatedTemp,
     required this.secondaryColor,
+    required this.separatedTemp,
+    required this.titleTextColor,
     required this.tempByHours,
     required this.hours,
-    required this.titleTextColor,
     required this.dates,
     required this.precipitation,
+    required this.dayProgress,
+    required this.sunrise,
+    required this.sunset,
   });
-
   final WeatherService weatherState;
   final Color mainColor;
   final Color secondaryColor;
@@ -445,6 +618,44 @@ class IndexPage extends StatelessWidget {
   final List<int> hours;
   final List<DateTime> dates;
   final List<double> precipitation;
+  final double dayProgress;
+  final DateTime sunrise;
+  final DateTime sunset;
+
+  @override
+  State<IndexPage> createState() => _IndexPageState();
+}
+
+class _IndexPageState extends State<IndexPage> {
+  late final WeatherService weatherState;
+  late final Color mainColor;
+  late final Color secondaryColor;
+  late final List<String> separatedTemp;
+  late final Color titleTextColor;
+  late final List<double> tempByHours;
+  late final List<int> hours;
+  late final List<DateTime> dates;
+  late final List<double> precipitation;
+  late final double dayProgress;
+  late final DateTime sunrise;
+  late final DateTime sunset;
+
+  @override
+  void initState() {
+    super.initState();
+    weatherState = widget.weatherState;
+    mainColor = widget.mainColor;
+    secondaryColor = widget.secondaryColor;
+    separatedTemp = widget.separatedTemp;
+    titleTextColor = widget.titleTextColor;
+    tempByHours = widget.tempByHours;
+    hours = widget.hours;
+    dates = widget.dates;
+    precipitation = widget.precipitation;
+    dayProgress = widget.dayProgress;
+    sunrise = widget.sunrise;
+    sunset = widget.sunset;
+  }
 
   Color _getColor(double ica) {
     if (ica >= 3.01) {
@@ -462,6 +673,36 @@ class IndexPage extends StatelessWidget {
     } else {
       return Colors.grey;
     }
+  }
+
+  Map<String, String> _getICAMessages(int ica) {
+    if (ica <= 50) {
+      return {"Bajo": "El aire es de buena calidad"};
+    } else if (ica <= 100) {
+      return {"Moderado": "La calidad del aire es media"};
+    } else if (ica <= 150) {
+      return {"Alto": "Nocivo para grupos sensibles"};
+    } else if (ica <= 200) {
+      return {"Muy alto": "Nocivo para la salud"};
+    } else if (ica >= 300) {
+      return {"Extremadamente alto": "Aire prácticamente venenoso"};
+    }
+    return {"Error": "No se pudienton obtener datos"};
+  }
+
+  IconData _getICAIcons(int ica) {
+    if (ica <= 50) {
+      return MdiIcons.emoticonHappy;
+    } else if (ica <= 100) {
+      return MdiIcons.emoticonNeutral;
+    } else if (ica <= 150) {
+      return MdiIcons.emoticonSad;
+    } else if (ica <= 200) {
+      return MdiIcons.emoticonCry;
+    } else if (ica >= 300) {
+      return MdiIcons.emoticonDead;
+    }
+    return WeatherIcons.alien;
   }
 
   @override
@@ -653,111 +894,106 @@ class IndexPage extends StatelessWidget {
                       ),
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: spots.length * 60,
-                        height: 150,
-                        child: LineChart(
-                          LineChartData(
-                            minX: 0,
-                            maxX: spots.length - 1,
-                            minY: (tempByHours.first) - 20,
-                            maxY: (tempByHours.first) + 40,
-                            //minY: 0,
-                            //maxY: 100,
-                            gridData: FlGridData(show: false),
-                            borderData: FlBorderData(show: false),
-                            clipData: FlClipData.none(),
-                            lineTouchData: LineTouchData(
-                              enabled: false,
-                              touchTooltipData: LineTouchTooltipData(
-                                tooltipBgColor: Color.fromARGB(0, 0, 0, 0),
-                                tooltipMargin: 1,
-                                tooltipPadding: EdgeInsets.all(20),
-                                getTooltipItems:
-                                    (List<LineBarSpot> touchedSpots) {
-                                      return touchedSpots.map((barSpot) {
-                                        final hour =
-                                            hours[barSpot
-                                                .spotIndex]; // lista de horas
-                                        final temp = barSpot.y.toStringAsFixed(
-                                          1,
-                                        ); // temperatura
-                                        final precip =
-                                            precipitation[barSpot.spotIndex]
-                                                .toInt(); // precipitación
+                  child: RepaintBoundary(
+                    child: SizedBox(
+                      width: spots.length * 60,
+                      height: 150,
+                      child: LineChart(
+                        LineChartData(
+                          minX: 0,
+                          maxX: spots.length - 1,
+                          minY: (tempByHours.first) - 20,
+                          maxY: (tempByHours.first) + 40,
+                          //minY: 0,
+                          //maxY: 100,
+                          gridData: FlGridData(show: false),
+                          borderData: FlBorderData(show: false),
+                          clipData: FlClipData.none(),
+                          lineTouchData: LineTouchData(
+                            enabled: false,
+                            touchTooltipData: LineTouchTooltipData(
+                              tooltipBgColor: Color.fromARGB(0, 0, 0, 0),
+                              tooltipMargin: 1,
+                              tooltipPadding: EdgeInsets.all(20),
+                              getTooltipItems:
+                                  (List<LineBarSpot> touchedSpots) {
+                                    return touchedSpots.map((barSpot) {
+                                      final hour =
+                                          hours[barSpot
+                                              .spotIndex]; // lista de horas
+                                      final temp = barSpot.y.toStringAsFixed(
+                                        1,
+                                      ); // temperatura
+                                      final precip =
+                                          precipitation[barSpot.spotIndex]
+                                              .toInt(); // precipitación
 
-                                        return LineTooltipItem(
-                                          "$hour H\n $temp°C\n💧 $precip%",
-                                          GoogleFonts.kanit(
-                                            color: Colors.white,
-                                          ),
-                                        );
-                                      }).toList();
-                                    },
-                              ),
-                            ),
-                            showingTooltipIndicators: List.generate(
-                              spots.length,
-                              (i) {
-                                return ShowingTooltipIndicators([
-                                  LineBarSpot(linechartbardata, 0, spots[i]),
-                                ]);
-                              },
-                            ),
-
-                            titlesData: FlTitlesData(
-                              leftTitles: AxisTitles(
-                                axisNameWidget: Padding(
-                                  padding: EdgeInsets.all(10),
-                                ),
-                                sideTitles: SideTitles(
-                                  reservedSize: 11,
-                                  showTitles: true,
-                                  getTitlesWidget: (value, meta) {
-                                    return Text("");
+                                      return LineTooltipItem(
+                                        "$hour H\n $temp°C\n💧 $precip%",
+                                        GoogleFonts.kanit(color: Colors.white),
+                                      );
+                                    }).toList();
                                   },
-                                ),
-                              ),
-                              bottomTitles: AxisTitles(
-                                sideTitles: SideTitles(
-                                  reservedSize: 40,
-                                  showTitles: false,
-                                  getTitlesWidget: (value, meta) {
-                                    return Text("");
-                                  },
-                                ),
-                              ),
-
-                              topTitles: const AxisTitles(
-                                axisNameWidget: Padding(
-                                  padding: EdgeInsets.all(12),
-                                ),
-                                sideTitles: SideTitles(
-                                  reservedSize: 40,
-                                  showTitles: false,
-                                ),
-                              ),
-                              rightTitles: AxisTitles(
-                                axisNameWidget: const Padding(
-                                  padding: EdgeInsets.all(12),
-                                ),
-                                sideTitles: SideTitles(
-                                  reservedSize: 11,
-                                  showTitles: true,
-                                  getTitlesWidget: (value, meta) {
-                                    return const Text("");
-                                  },
-                                ),
-                              ),
                             ),
-                            lineBarsData: [linechartbardata],
                           ),
+                          showingTooltipIndicators: List.generate(
+                            spots.length,
+                            (i) {
+                              return ShowingTooltipIndicators([
+                                LineBarSpot(linechartbardata, 0, spots[i]),
+                              ]);
+                            },
+                          ),
+
+                          titlesData: FlTitlesData(
+                            leftTitles: AxisTitles(
+                              axisNameWidget: Padding(
+                                padding: EdgeInsets.all(10),
+                              ),
+                              sideTitles: SideTitles(
+                                reservedSize: 11,
+                                showTitles: true,
+                                getTitlesWidget: (value, meta) {
+                                  return Text("");
+                                },
+                              ),
+                            ),
+                            bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                reservedSize: 40,
+                                showTitles: false,
+                                getTitlesWidget: (value, meta) {
+                                  return Text("");
+                                },
+                              ),
+                            ),
+
+                            topTitles: const AxisTitles(
+                              axisNameWidget: Padding(
+                                padding: EdgeInsets.all(12),
+                              ),
+                              sideTitles: SideTitles(
+                                reservedSize: 40,
+                                showTitles: false,
+                              ),
+                            ),
+                            rightTitles: AxisTitles(
+                              axisNameWidget: const Padding(
+                                padding: EdgeInsets.all(12),
+                              ),
+                              sideTitles: SideTitles(
+                                reservedSize: 11,
+                                showTitles: true,
+                                getTitlesWidget: (value, meta) {
+                                  return const Text("");
+                                },
+                              ),
+                            ),
+                          ),
+                          lineBarsData: [linechartbardata],
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ],
@@ -768,32 +1004,67 @@ class IndexPage extends StatelessWidget {
           elevation: 10,
           color: Color.fromARGB(90, 10, 91, 119),
           child: SizedBox(
-            height: 70,
+            height: 120,
             width: 340,
-            child: Center(
-              child: Column(
+            child: Padding(
+              padding: EdgeInsetsGeometry.all(12),
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                spacing: 10,
                 children: [
-                  Text(
-                    "ICA: ${weatherState.icaCache!["icaFinal"]}",
-                    style: TextStyle(fontSize: 20, color: Colors.white),
-                  ),
-                  SizedBox(
-                    height: 10,
-                    width: 200,
-                    child: LinearProgressIndicator(
-                      borderRadius: BorderRadius.all(Radius.circular(600)),
-                      backgroundColor: mainColor,
-                      value:
-                          ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
-                              0) /
-                          100,
-                      color: _getColor(
-                        ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
-                                0) /
-                            100,
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            "ICA ",
+                            style: TextStyle(fontSize: 12, color: Colors.white),
+                          ),
+                          const Icon(
+                            WeatherIcons.windy,
+                            color: Colors.white,
+                            size: 15,
+                          ),
+                        ],
                       ),
-                    ),
+                      Text(
+                        _getICAMessages(
+                          weatherState.icaCache!["icaFinal"],
+                        ).values.first,
+                        style: TextStyle(fontSize: 15, color: Colors.white),
+                      ),
+                      Text(
+                        "${_getICAMessages(weatherState.icaCache!["icaFinal"]).keys.first} (${weatherState.icaCache!["icaFinal"]})",
+                        style: TextStyle(fontSize: 20, color: Colors.white),
+                      ),
+
+                      SizedBox(
+                        height: 10,
+                        width: 200,
+                        child: LinearProgressIndicator(
+                          borderRadius: BorderRadius.all(Radius.circular(600)),
+                          backgroundColor: mainColor,
+                          value:
+                              ((weatherState.icaCache!["icaFinal"] *
+                                      100 /
+                                      100) ??
+                                  0) /
+                              500,
+                          color: _getColor(
+                            ((weatherState.icaCache!["icaFinal"] * 100 / 100) ??
+                                    0) /
+                                500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Icon(
+                    _getICAIcons(weatherState.icaCache!["icaFinal"]),
+                    size: 50,
+                    color: Colors.white,
                   ),
                 ],
               ),
@@ -801,7 +1072,81 @@ class IndexPage extends StatelessWidget {
           ),
         ),
         Cards(weatherState: weatherState),
+        SunCurve(progress: dayProgress, sunrise: sunrise, sunset: sunset),
       ],
+    );
+  }
+}
+
+class SunCurve extends StatelessWidget {
+  const SunCurve({
+    super.key,
+    required this.progress,
+    required this.sunset,
+    required this.sunrise,
+  });
+
+  final double progress;
+  final DateTime sunset;
+  final DateTime sunrise;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsetsGeometry.only(bottom: 100),
+      child: Card(
+        elevation: 10,
+        color: Color.fromARGB(90, 10, 91, 119),
+        child: SizedBox(
+          height: 200,
+          width: 350,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 300,
+                height: 120,
+                child: CustomPaint(painter: SunPathPainter(progress)),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  Column(
+                    children: [
+                      Text(
+                        "Amanecer",
+                        style: GoogleFonts.kanit(
+                          color: Colors.white,
+                          fontSize: 17,
+                        ),
+                      ),
+                      Text(
+                        "${sunrise.hour}:${sunrise.minute}",
+                        style: GoogleFonts.kanit(color: Colors.white),
+                      ),
+                    ],
+                  ),
+                  Column(
+                    children: [
+                      Text(
+                        "Atardecer",
+                        style: GoogleFonts.kanit(
+                          color: Colors.white,
+                          fontSize: 17,
+                        ),
+                      ),
+                      Text(
+                        "${sunset.hour}:${sunset.minute}",
+                        style: GoogleFonts.kanit(color: Colors.white),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -848,7 +1193,7 @@ class StartPage extends StatelessWidget {
           : Center(
               child: Card(
                 color: Color.fromARGB(66, 10, 92, 119),
-                elevation: 100,
+                elevation: 10,
                 child: SizedBox(
                   width: 350,
                   height: 100,
@@ -881,7 +1226,6 @@ class StartPage extends StatelessWidget {
   }
 }
 
-// ignore: must_be_immutable
 class Cards extends StatelessWidget {
   Cards({super.key, required this.weatherState});
 
@@ -889,9 +1233,9 @@ class Cards extends StatelessWidget {
   final WeatherService weatherState;
   double fontCardSize = 18.0;
 
-  var mainCardColor = Color.fromARGB(150, 10, 91, 119);
-  var secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
-  var titleTextColor = Color.fromARGB(255, 244, 240, 88);
+  final mainCardColor = Color.fromARGB(150, 10, 91, 119);
+  final secondaryCardColor = Color.fromARGB(255, 67, 237, 253);
+  final titleTextColor = Color.fromARGB(255, 244, 240, 88);
 
   Map<String, String> _getuvmessage(double uvIndex) {
     if (uvIndex >= 1.1) {
@@ -1005,12 +1349,12 @@ class Cards extends StatelessWidget {
         childAspectRatio: (1 / 1.1),
         children: [
           Card(
-            elevation: 100,
+            elevation: 10,
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -1023,7 +1367,7 @@ class Cards extends StatelessWidget {
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(Icons.sunny, color: Colors.white, size: 15),
+                      const Icon(Icons.sunny, color: Colors.white, size: 15),
                     ],
                   ),
                   Text(
@@ -1148,12 +1492,12 @@ class Cards extends StatelessWidget {
           ),
 
           Card(
-            elevation: 100,
+            elevation: 10,
             color: mainCardColor,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Row(
@@ -1166,7 +1510,11 @@ class Cards extends StatelessWidget {
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(WeatherIcons.windy, color: Colors.white, size: 15),
+                      const Icon(
+                        WeatherIcons.wind,
+                        color: Colors.white,
+                        size: 16,
+                      ),
                     ],
                   ),
                   Text(
@@ -1300,7 +1648,8 @@ class Cards extends StatelessWidget {
                         ),
 
                         Transform.rotate(
-                          angle: weatherState.metarCacheData!["widDirection"],
+                          angle:
+                              weatherState.metarCacheData!["widDirection"] ?? 0,
                           child: Icon(
                             Icons.navigation,
                             size: 40,
@@ -1316,23 +1665,25 @@ class Cards extends StatelessWidget {
           ),
           Card(
             color: mainCardColor,
-            elevation: 100,
+            elevation: 10,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                spacing: 10,
                 children: [
                   Row(
                     children: [
                       Text(
                         "Presión ",
                         style: GoogleFonts.kanit(
-                          fontSize: 13,
+                          fontSize: 12,
                           color: Colors.white,
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(
+                      const Icon(
                         WeatherIcons.barometer,
                         color: Colors.white,
                         size: 15,
@@ -1341,12 +1692,14 @@ class Cards extends StatelessWidget {
                   ),
                   Text(
                     _getPressureAlertMessage(
-                      double.parse(weatherState.metarCacheData!["pressure"]),
+                      double.parse(
+                        weatherState.metarCacheData!["pressure"] ?? 0,
+                      ),
                     ).values.first,
-                    style: GoogleFonts.kanit(fontSize: 13, color: Colors.white),
+                    style: GoogleFonts.kanit(fontSize: 12, color: Colors.white),
                   ),
                   Padding(
-                    padding: EdgeInsetsGeometry.only(top: 10),
+                    padding: EdgeInsetsGeometry.only(top: 0),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.start,
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1357,6 +1710,13 @@ class Cards extends StatelessWidget {
                               weatherState.metarCacheData!["pressure"],
                             ),
                           ).keys.first,
+                          style: GoogleFonts.kanit(
+                            fontSize: fontCardSize,
+                            color: Colors.white,
+                          ),
+                        ),
+                        Text(
+                          "${weatherState.metarCacheData!["pressure"]} hPa",
                           style: GoogleFonts.kanit(
                             fontSize: fontCardSize,
                             color: Colors.white,
@@ -1387,11 +1747,11 @@ class Cards extends StatelessWidget {
 
           Card(
             color: mainCardColor,
-            elevation: 100,
+            elevation: 10,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -1404,7 +1764,7 @@ class Cards extends StatelessWidget {
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(
+                      const Icon(
                         WeatherIcons.raindrops,
                         color: Colors.white,
                         size: 18,
@@ -1456,11 +1816,11 @@ class Cards extends StatelessWidget {
           ),
           Card(
             color: mainCardColor,
-            elevation: 100,
+            elevation: 10,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -1473,7 +1833,11 @@ class Cards extends StatelessWidget {
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(Icons.dew_point, color: Colors.white, size: 15),
+                      const Icon(
+                        Icons.dew_point,
+                        color: Colors.white,
+                        size: 15,
+                      ),
                     ],
                   ),
                   Padding(
@@ -1511,11 +1875,11 @@ class Cards extends StatelessWidget {
 
           Card(
             color: mainCardColor,
-            elevation: 100,
+            elevation: 10,
             child: Padding(
               padding: cardPadding,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -1528,7 +1892,7 @@ class Cards extends StatelessWidget {
                           fontWeight: FontWeight.w400,
                         ),
                       ),
-                      Icon(
+                      const Icon(
                         WeatherIcons.humidity,
                         color: Colors.white,
                         size: 13,
@@ -1587,7 +1951,13 @@ class Cards extends StatelessWidget {
 }
 
 class MovingCloudsBackground extends StatefulWidget {
-  const MovingCloudsBackground({super.key});
+  final Widget child;
+  final double dayProgress;
+  const MovingCloudsBackground({
+    super.key,
+    required this.child,
+    required this.dayProgress,
+  });
 
   @override
   _MovingCloudsBackgroundState createState() => _MovingCloudsBackgroundState();
@@ -1596,6 +1966,7 @@ class MovingCloudsBackground extends StatefulWidget {
 class _MovingCloudsBackgroundState extends State<MovingCloudsBackground>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
+  late double dayProgress;
 
   var cloud1X;
   var cloud2X;
@@ -1611,6 +1982,7 @@ class _MovingCloudsBackgroundState extends State<MovingCloudsBackground>
     _controller.addListener(() {
       setState(() {});
     });
+    dayProgress = widget.dayProgress;
   }
 
   @override
@@ -1626,11 +1998,12 @@ class _MovingCloudsBackgroundState extends State<MovingCloudsBackground>
       builder: (_, __) {
         return CustomPaint(
           painter: CloudyBakcgroundPainter(
+            dayProgress: dayProgress,
             cloud1X: 0.2 + 0.1 * sin(2 * pi * _controller.value),
             cloud2X: 0.41 + 0.11 * sin(5 * pi * _controller.value),
             cloud3X: 0.21 + 0.33 * sin(5 * pi * _controller.value),
           ),
-          child: SizedBox.expand(),
+          child: widget.child,
         );
       },
     );
@@ -1642,52 +2015,314 @@ class CloudyBakcgroundPainter extends CustomPainter {
     required this.cloud1X,
     required this.cloud2X,
     required this.cloud3X,
+    required this.dayProgress,
   });
 
   final double cloud1X;
   final double cloud2X;
   final double cloud3X;
+  double dayProgress;
 
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 100);
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 60);
+    // Fondo dinámico
+    final Color backgroundColor;
+    if (dayProgress < 0.5) {
+      // Amanecer a mediodía
+      backgroundColor =
+          Color.lerp(
+            const Color.fromARGB(255, 253, 132, 152), // Amanecer
+            const Color.fromARGB(255, 135, 206, 235), // Mediodía
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(255, 135, 206, 235);
+    } else if (dayProgress < 0.75) {
+      // Mediodía a atardecer
+      backgroundColor =
+          Color.lerp(
+            const Color.fromARGB(255, 135, 206, 235), // Mediodía
+            const Color.fromARGB(255, 255, 145, 0), // Atardecer
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(255, 135, 206, 235);
+    } else {
+      // Atardecer a noche
+      backgroundColor =
+          Color.lerp(
+            const Color.fromARGB(255, 255, 140, 0), // Atardecer
+            const Color.fromARGB(255, 76, 10, 231), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(255, 0, 0, 139);
+    }
 
-    paint.color = Color.fromARGB(255, 201, 255, 5);
+    paint.color = backgroundColor;
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint);
+
+    // Paleta para el primer círculo
+    final Color cloud1Color;
+    if (dayProgress < 0.5) {
+      // Amanecer a mediodía
+      cloud1Color =
+          Color.lerp(
+            const Color.fromARGB(255, 255, 182, 193), // Amanecer
+            const Color.fromARGB(255, 201, 255, 5), // Mediodía
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(255, 201, 255, 5);
+    } else if (dayProgress < 0.75) {
+      // Mediodía a atardecer
+      cloud1Color =
+          Color.lerp(
+            const Color.fromARGB(255, 201, 255, 5), // Mediodía
+            const Color.fromARGB(
+              255,
+              247,
+              221,
+              207,
+            ), // Atardecer: rojo anaranjado
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(255, 201, 255, 5);
+    } else {
+      // Atardecer a noche
+      cloud1Color =
+          Color.lerp(
+            const Color.fromARGB(
+              255,
+              231,
+              227,
+              226,
+            ), // Atardecer: rojo anaranjado
+            const Color.fromARGB(255, 200, 200, 255), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(255, 25, 25, 112);
+    }
+
+    paint.color = cloud1Color;
     canvas.drawCircle(
       Offset(size.width * cloud1X, size.height * 0.2),
       100,
       paint,
     );
 
-    paint.color = Color.fromARGB(206, 218, 245, 255);
+    // Paleta para el segundo círculo
+    final Color cloud2Color;
+    if (dayProgress < 0.5) {
+      cloud2Color =
+          Color.lerp(
+            const Color.fromARGB(206, 255, 218, 185), // Amanecer
+            const Color.fromARGB(206, 218, 245, 255), // Mediodía
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(206, 218, 245, 255);
+    } else if (dayProgress < 0.75) {
+      cloud2Color =
+          Color.lerp(
+            const Color.fromARGB(206, 218, 245, 255), // Mediodía
+            const Color.fromARGB(
+              206,
+              247,
+              216,
+              175,
+            ), // Atardecer: naranja oscuro
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(206, 218, 245, 255);
+    } else {
+      cloud2Color =
+          Color.lerp(
+            const Color.fromARGB(
+              206,
+              155,
+              113,
+              63,
+            ), // Atardecer: naranja oscuro
+            const Color.fromARGB(206, 118, 83, 243), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(206, 47, 79, 79);
+    }
+
+    paint.color = cloud2Color;
     canvas.drawCircle(
       Offset(size.width * cloud2X, size.height * 0.3),
       150,
       paint,
     );
+    // Paleta para el tercer círculo
+    final Color cloud3Color;
+    if (dayProgress < 0.5) {
+      cloud3Color =
+          Color.lerp(
+            const Color.fromARGB(146, 255, 145, 101), // Amanecer
+            const Color.fromARGB(146, 218, 245, 255), // Mediodía
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(146, 218, 245, 255);
+    } else if (dayProgress < 0.75) {
+      cloud3Color =
+          Color.lerp(
+            const Color.fromARGB(146, 218, 245, 255), // Mediodía
+            const Color.fromARGB(146, 194, 228, 2), // Atardecer
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(146, 218, 245, 255);
+    } else {
+      cloud3Color =
+          Color.lerp(
+            const Color.fromARGB(146, 255, 0, 64), // Atardecer
+            const Color.fromARGB(85, 0, 255, 149), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(146, 0, 0, 139);
+    }
 
-    paint.color = Color.fromARGB(146, 218, 245, 255);
+    paint.color = cloud3Color;
     canvas.drawCircle(
       Offset(size.width * cloud3X + 150, size.height * 0.5),
       150,
       paint,
     );
 
-    paint.color = Color.fromARGB(132, 230, 248, 26);
+    // Paleta para el cuarto círculo
+    final Color cloud4Color;
+    if (dayProgress < 0.5) {
+      cloud4Color =
+          Color.lerp(
+            const Color.fromARGB(132, 255, 215, 0), // Amanecer
+            const Color.fromARGB(
+              132,
+              230,
+              248,
+              26,
+            ), // Mediodía: amarillo verdoso
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(132, 230, 248, 26);
+    } else if (dayProgress < 0.75) {
+      cloud4Color =
+          Color.lerp(
+            const Color.fromARGB(
+              132,
+              230,
+              248,
+              26,
+            ), // Mediodía: amarillo verdoso
+            const Color.fromARGB(132, 156, 66, 50), // Atardecer
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(132, 230, 248, 26);
+    } else {
+      cloud4Color =
+          Color.lerp(
+            const Color.fromARGB(132, 255, 99, 71), // Atardecer
+            const Color.fromARGB(118, 238, 250, 75), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(132, 72, 61, 139);
+    }
+
+    paint.color = cloud4Color;
     canvas.drawCircle(
       Offset(size.width * cloud1X * 2, size.height * 0.9),
       200,
       paint,
     );
 
-    paint.color = Color.fromARGB(146, 60, 255, 0);
+    // Paleta para la línea
+    final Color lineColor;
+    if (dayProgress < 0.5) {
+      lineColor =
+          Color.lerp(
+            const Color.fromARGB(146, 139, 69, 19), // Amanecer
+            const Color.fromARGB(146, 60, 255, 0), // Mediodía
+            dayProgress * 2,
+          ) ??
+          const Color.fromARGB(146, 60, 255, 0);
+    } else if (dayProgress < 0.75) {
+      lineColor =
+          Color.lerp(
+            const Color.fromARGB(146, 60, 255, 0), // Mediodía
+            const Color.fromARGB(146, 178, 34, 34), // Atardecer
+            (dayProgress - 0.5) * 4,
+          ) ??
+          const Color.fromARGB(146, 60, 255, 0);
+    } else {
+      lineColor =
+          Color.lerp(
+            const Color.fromARGB(146, 255, 0, 0), // Atardecer
+            const Color.fromARGB(92, 186, 189, 14), // Noche
+            (dayProgress - 0.75) * 4,
+          ) ??
+          const Color.fromARGB(146, 0, 0, 205);
+    }
+
+    paint.color = lineColor;
     paint.strokeWidth = 100;
     canvas.drawLine(
       Offset(size.width - 600, size.height - 50),
       Offset(size.width, size.height - 50),
       paint,
     );
+  }
+
+  @override
+  bool shouldRepaint(CloudyBakcgroundPainter oldDelegate) {
+    return cloud1X != oldDelegate.cloud1X ||
+        cloud2X != oldDelegate.cloud2X ||
+        cloud3X != oldDelegate.cloud3X ||
+        dayProgress != oldDelegate.dayProgress;
+  }
+}
+
+class SunPathPainter extends CustomPainter {
+  final double progress;
+
+  SunPathPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paintCurve = Paint()
+      ..color = Colors.orange
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+
+    final paintSun = Paint()
+      ..color = Colors.yellow
+      ..style = PaintingStyle.fill;
+
+    final path = Path();
+
+    //Calcular la curva
+    final p0 = Offset(0, size.height);
+    final p1 = Offset(
+      size.width / 2,
+      size.height * 0.3,
+    ); // control point (más bajo que 0)
+    final p2 = Offset(size.width, size.height);
+
+    // Posición del sol sobre la curva
+    path.moveTo(p0.dx, p0.dy);
+    path.quadraticBezierTo(p1.dx, p1.dy, p2.dx, p2.dy);
+    canvas.drawPath(path, paintCurve);
+    final sunPosition = _calculateY(progress, p0, p1, p2);
+
+    //Dibujar al sol
+    canvas.drawCircle(sunPosition, 10, paintSun);
+  }
+
+  Offset _calculateY(double t, Offset p0, Offset p1, Offset p2) {
+    final x =
+        (1 - t) * (1 - t) * p0.dx + 2 * (1 - t) * t * p1.dx + t * t * p2.dx;
+
+    final y =
+        (1 - t) * (1 - t) * p0.dy + 2 * (1 - t) * t * p1.dy + t * t * p2.dy;
+
+    return Offset(x, y);
   }
 
   @override

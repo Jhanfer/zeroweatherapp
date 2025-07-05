@@ -627,8 +627,8 @@ class WeatherService with ChangeNotifier {
           }
 
           final dailyData = jsonDecode(forecastDailyResponse.body);
-          final dailySunrise = dailyData["daily"]["sunrise"];
-          final dailySunset = dailyData["daily"]["sunset"];
+          final dailySunrise = dailyData["daily"]["sunrise"][0];
+          final dailySunset = dailyData["daily"]["sunset"][0];
           final dailySunshineDuration = dailyData["daily"]["sunshine_duration"];
           final dailyDaylightDuration = dailyData["daily"]["daylight_duration"];
 
