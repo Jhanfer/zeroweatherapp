@@ -46,10 +46,11 @@ dependencies:
   permission_handler: ^11.1.0
   open_filex: ^4.4.0
   csv: ^6.0.0
-  flutter_launcher_icons: "^0.13.1"
-  flutter_native_splash: "^2.3.11"
-  weather_icons: "3.0.0"
-  material_design_icons_flutter: "^6.0.952"
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.3.11
+  weather_icons: 3.0.0
+  material_design_icons_flutter: ^6.0.952
+  flutter_timezone: 4.1.1
 
 
 flutter_launcher_icons:

@@ -2,6 +2,7 @@ import 'package:csv/csv.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
@@ -156,6 +157,7 @@ class WeatherService with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final cacheKey = "metar_last_position";
     Map<String, dynamic>? currentPosition;
+    final String currentTimezone = await FlutterTimezone.getLocalTimezone();
 
     debugPrint("GetPrecisePosition Iniciada.");
     try {
@@ -163,6 +165,9 @@ class WeatherService with ChangeNotifier {
       if (cachedPositionJson != null) {
         final decodedPositionCache = jsonDecode(cachedPositionJson);
         final timeStamp = decodedPositionCache["timeStamp"] ?? 0;
+        if (decodedPositionCache["timezone"] == null) {
+          decodedPositionCache["timezone"] = currentTimezone;
+        }
 
         if (DateTime.now().millisecondsSinceEpoch - timeStamp < 2 * 60 * 1000) {
           debugPrint("Usando posición mejorada cacheada.");
@@ -180,6 +185,7 @@ class WeatherService with ChangeNotifier {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          "timezone": currentTimezone,
         };
         final success = await prefs.setString(
           cacheKey,
@@ -206,6 +212,9 @@ class WeatherService with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final cacheKey = "metar_last_position";
     Map<String, dynamic>? freshPositionData;
+    final String currentTimezone = await FlutterTimezone.getLocalTimezone();
+
+    debugPrint("Zona horaria actual $currentTimezone");
 
     try {
       final cachedPositionJson = prefs.getString(cacheKey);
@@ -213,6 +222,10 @@ class WeatherService with ChangeNotifier {
         final decodedPositionCache = jsonDecode(cachedPositionJson);
         final timeStamp = decodedPositionCache["timeStamp"] ?? 0;
         // Siempre asignamos la última posición cargada del caché a _lastKnownPosition
+        if (decodedPositionCache["timezone"] == null) {
+          decodedPositionCache["timezone"] = currentTimezone;
+        }
+
         _lastPosition = decodedPositionCache;
 
         if (DateTime.now().millisecondsSinceEpoch - timeStamp <
@@ -232,6 +245,7 @@ class WeatherService with ChangeNotifier {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          "timezone": currentTimezone,
         };
         final success = await prefs.setString(
           cacheKey,
@@ -376,7 +390,7 @@ class WeatherService with ChangeNotifier {
 
           meteoResponse = await http.get(
             Uri.parse(
-              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code",
+              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code&timezone=${_lastPosition["timezone"]}",
             ),
           );
         }
@@ -581,13 +595,13 @@ class WeatherService with ChangeNotifier {
       try {
         forecastHourlyResponse = await http.get(
           Uri.parse(
-            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,uv_index",
+            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,uv_index&timezone=${_lastPosition["timezone"]}",
           ),
         );
 
         forecastDailyResponse = await http.get(
           Uri.parse(
-            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,sunshine_duration,daylight_duration",
+            "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,sunshine_duration,daylight_duration&timezone=${_lastPosition["timezone"]}",
           ),
         );
 
@@ -666,6 +680,7 @@ class WeatherService with ChangeNotifier {
     }
 
     forecastCachedData = dataToUse;
+
     notifyListeners();
   }
 
@@ -682,7 +697,7 @@ class WeatherService with ChangeNotifier {
     return null; // fuera de rango
   }
 
-  void getICA() async {
+  Future<void> getICA() async {
     final prefs = await SharedPreferences.getInstance();
     final cacheKey = "ICA";
     final icaCachedData = prefs.getString(cacheKey);
