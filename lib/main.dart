@@ -8,6 +8,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -34,6 +35,7 @@ void main() async {
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   await FlutterDownloader.initialize(debug: false);
   FlutterDownloader.registerCallback(downloadCallback);
+  await initializeDateFormatting("es", null);
 
   // Configuramos el ReceivePort globalmente
   final ReceivePort port = ReceivePort();
@@ -184,7 +186,6 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initAsyncStuff();
     });
@@ -721,6 +722,7 @@ class _IndexPageState extends State<IndexPage> {
   late final double dayProgress;
   late final DateTime sunrise;
   late final DateTime sunset;
+  late List<FlSpot> spots;
 
   @override
   void initState() {
@@ -734,6 +736,23 @@ class _IndexPageState extends State<IndexPage> {
     dayProgress = widget.dayProgress;
     sunrise = widget.sunrise;
     sunset = widget.sunset;
+    _updateSpots();
+  }
+
+  @override
+  void didUpdateWidget(covariant IndexPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tempByHours != oldWidget.tempByHours ||
+        widget.hours != oldWidget.hours) {
+      _updateSpots();
+    }
+  }
+
+  void _updateSpots() {
+    spots = List.generate(
+      widget.hours.length,
+      (i) => FlSpot(i.toDouble(), widget.tempByHours[i]),
+    );
   }
 
   Color _getColor(double ica) {
@@ -786,22 +805,12 @@ class _IndexPageState extends State<IndexPage> {
 
   @override
   Widget build(BuildContext context) {
-    final spots = List.generate(
-      hours.length,
-      (i) => FlSpot(i.toDouble(), tempByHours[i]),
-    );
-
     var intigerPart = separatedTemp[0];
-
     final linechartbardata = LineChartBarData(
       show: true,
       spots: spots,
       gradient: LinearGradient(
-        colors: [
-          widget.mainColor,
-          widget.secondaryColor,
-          widget.titleTextColor,
-        ],
+        colors: [widget.mainColor, widget.mainColor, widget.mainColor],
       ),
       barWidth: 4,
       isCurved: true,
@@ -1033,7 +1042,7 @@ class _IndexPageState extends State<IndexPage> {
                                                   .toInt(); // precipitación
 
                                           return LineTooltipItem(
-                                            "$hour H\n $temp°C\n💧 $precip%",
+                                            "$hour H\n $temp°C\n☔ $precip%",
                                             GoogleFonts.kanit(
                                               color: Colors.white,
                                             ),
@@ -1111,7 +1120,7 @@ class _IndexPageState extends State<IndexPage> {
               elevation: 4,
               color: widget.secondaryColor,
               child: SizedBox(
-                height: 120,
+                height: 145,
                 width: constraits.maxWidth - 50,
                 child: Padding(
                   padding: EdgeInsetsGeometry.all(12),
@@ -1142,21 +1151,23 @@ class _IndexPageState extends State<IndexPage> {
                                 ],
                               ),
                             ),
-                            Flexible(
-                              child: Text(
-                                _getICAMessages(
-                                  weatherState.icaCache!["icaFinal"],
-                                ).values.first,
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  color: Colors.white,
-                                ),
+
+                            Text(
+                              _getICAMessages(
+                                weatherState.icaCache!["icaFinal"],
+                              ).values.first,
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
                               ),
+                              softWrap: true,
+                              overflow: TextOverflow.visible,
                             ),
+
                             Flexible(
                               child: Text(
                                 "${_getICAMessages(weatherState.icaCache!["icaFinal"]).keys.first} (${weatherState.icaCache!["icaFinal"]})",
-                                style: TextStyle(
+                                style: GoogleFonts.kanit(
                                   fontSize: 20,
                                   color: Colors.white,
                                 ),
@@ -1203,6 +1214,7 @@ class _IndexPageState extends State<IndexPage> {
                 ),
               ),
             ),
+            WeekForecast(widget: widget, weatherState: weatherState),
             Cards(
               weatherState: weatherState,
               mainColor: widget.mainColor,
@@ -1224,7 +1236,98 @@ class _IndexPageState extends State<IndexPage> {
   }
 }
 
-class SunCurve extends StatelessWidget {
+class WeekForecast extends StatelessWidget {
+  const WeekForecast({
+    super.key,
+    required this.widget,
+    required this.weatherState,
+  });
+
+  final IndexPage widget;
+  final WeatherService weatherState;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraits) {
+        return Card(
+          elevation: 4,
+          color: widget.secondaryColor,
+          child: Padding(
+            padding: const EdgeInsets.all(15),
+            child: SizedBox(
+              width: constraits.maxWidth - 80,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: List.generate(
+                  weatherState.forecastCachedData!["weekDays"].length,
+                  (index) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        spacing: 50,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text(
+                            weatherState.forecastCachedData!["weekDays"][index],
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Text(
+                                "${weatherState.forecastCachedData!["daysPrecipitationTotals"][index]}%  ",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              Icon(
+                                WeatherIcons.raindrop,
+                                color: widget.titleTextColor,
+                                size: 15,
+                              ),
+                            ],
+                          ),
+                          Row(
+                            spacing: 5,
+                            children: [
+                              Text(
+                                "↑ ${(weatherState.forecastCachedData!["daysMaxTemps"][index] as num).toInt()}°",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              Text(
+                                "↓ ${(weatherState.forecastCachedData!["daysMinTemps"][index] as num).toInt()}°",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class SunCurve extends StatefulWidget {
   const SunCurve({
     super.key,
     required this.progress,
@@ -1243,62 +1346,86 @@ class SunCurve extends StatelessWidget {
   final titleTextColor;
 
   @override
+  State<SunCurve> createState() => _SunCurveState();
+}
+
+class _SunCurveState extends State<SunCurve> {
+  late Color secondaryColor;
+  late DateTime sunset;
+  late DateTime sunrise;
+  late double progress;
+
+  @override
+  void initState() {
+    super.initState();
+    secondaryColor = widget.secondaryColor;
+    sunset = widget.sunset;
+    sunrise = widget.sunrise;
+    progress = widget.progress;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsetsGeometry.only(bottom: 100),
-      child: Card(
-        elevation: 4,
-        color: secondaryColor,
-        child: SizedBox(
-          height: 200,
-          width: 350,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 300,
-                height: 120,
-                child: CustomPaint(painter: SunPathPainter(progress)),
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+    return LayoutBuilder(
+      builder: (context, constraits) {
+        final double availableWith = constraits.maxWidth;
+        return Padding(
+          padding: EdgeInsetsGeometry.only(bottom: 100),
+          child: Card(
+            elevation: 4,
+            color: secondaryColor,
+            child: SizedBox(
+              height: 200,
+              width: availableWith - 50,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
-                  Column(
-                    children: [
-                      Text(
-                        "Amanecer",
-                        style: GoogleFonts.kanit(
-                          color: Colors.white,
-                          fontSize: 17,
-                        ),
-                      ),
-                      Text(
-                        "${sunrise.hour}:${sunrise.minute}",
-                        style: GoogleFonts.kanit(color: Colors.white),
-                      ),
-                    ],
+                  SizedBox(
+                    width: 300,
+                    height: 120,
+                    child: CustomPaint(painter: SunPathPainter(progress)),
                   ),
-                  Column(
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
-                      Text(
-                        "Atardecer",
-                        style: GoogleFonts.kanit(
-                          color: Colors.white,
-                          fontSize: 17,
-                        ),
+                      Column(
+                        children: [
+                          Text(
+                            "Amanecer",
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 17,
+                            ),
+                          ),
+                          Text(
+                            "${sunrise.hour}:${sunrise.minute}",
+                            style: GoogleFonts.kanit(color: Colors.white),
+                          ),
+                        ],
                       ),
-                      Text(
-                        "${sunset.hour}:${sunset.minute}",
-                        style: GoogleFonts.kanit(color: Colors.white),
+                      Column(
+                        children: [
+                          Text(
+                            "Atardecer",
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 17,
+                            ),
+                          ),
+                          Text(
+                            "${sunset.hour}:${sunset.minute}",
+                            style: GoogleFonts.kanit(color: Colors.white),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

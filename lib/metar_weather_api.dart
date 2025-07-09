@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:async';
-
+import 'package:intl/intl.dart';
 import 'package:weather_icons/weather_icons.dart';
 
 class Station {
@@ -586,6 +586,17 @@ class WeatherService with ChangeNotifier {
       final timeStamp = data["timeStamp"] ?? 0;
 
       if (DateTime.now().millisecondsSinceEpoch - timeStamp < 30 * 60 * 1000) {
+        //rectificador para nuevos datos
+        if (data["dailyMaxTemps"] == null) {
+          data["dailyMaxTemps"] = [0.0, 0.0];
+        } else if (data["dailyMinTemps"] == null) {
+          data["dailyMinTemps"] = [0.0, 0.0];
+        } else if (data["dailyPrecipitationTotals"] == null) {
+          data["dailyPrecipitationTotals"] = [0.0, 0.0];
+        } else if (data["weekDays"] == null) {
+          data["weekDays"] = ["none", "none"];
+        }
+
         debugPrint("CachedForecastData");
         dataToUse = data;
       }
@@ -619,8 +630,60 @@ class WeatherService with ChangeNotifier {
           List<double> parsedPrecipitation = [];
           List<double> dailyUVIndexMax = [];
 
+          Map<String, List<double>> dailyTemps = {};
+          Map<String, List<double>> dailyPrecipitation = {};
+
           var now = DateTime.now().toLocal();
           final limit = now.add(const Duration(hours: 24));
+          final weekLimit = now.add(const Duration(days: 7));
+
+          for (int i = 0; i < hourlyTime.length; i++) {
+            var parsed = DateTime.parse(hourlyTime[i]).toLocal();
+            if (parsed.isBefore(now) && parsed.isAfter(weekLimit)) continue;
+
+            final dateKey =
+                "${parsed.year}-${parsed.month.toString().padLeft(2, "0")}-${parsed.day.toString().padLeft(2, "0")}";
+
+            dailyTemps.putIfAbsent(dateKey, () => []);
+            dailyTemps[dateKey]!.add((hourlyTemp[i] as num).toDouble());
+
+            dailyPrecipitation.putIfAbsent(dateKey, () => []);
+            dailyPrecipitation[dateKey]!.add(
+              (hourlyPrecipitationProbability[i] as num).toDouble(),
+            );
+          }
+
+          List<double> dailyMaxTemps = [];
+          List<double> dailyMinTemps = [];
+          List<int> dailyPrecipitationTotals = [];
+          List<String> weekDays = [];
+
+          for (var entry in dailyTemps.entries) {
+            final temps = entry.value;
+            final precipitations = dailyPrecipitation[entry.key];
+            dailyMaxTemps.add(
+              temps.reduce(
+                (currentMax, element) =>
+                    element > currentMax ? element : currentMax,
+              ),
+            );
+            dailyMinTemps.add(
+              temps.reduce(
+                (currentMin, element) =>
+                    element < currentMin ? element : currentMin,
+              ),
+            );
+
+            dailyPrecipitationTotals.add(
+              (precipitations!.reduce((a, b) => a + b) / precipitations.length)
+                  .toInt(),
+            );
+
+            final date = DateTime.parse(entry.key);
+            final dayName = DateFormat.EEEE("es").format(date);
+
+            weekDays.add(dayName[0].toUpperCase() + dayName.substring(1));
+          }
 
           for (int i = 0; i < hourlyTime.length; i++) {
             var parsed = DateTime.parse(hourlyTime[i]).toLocal();
@@ -667,6 +730,10 @@ class WeatherService with ChangeNotifier {
             "dailySunshineDuration": dailySunshineDuration,
             "dailyDaylightDuration": dailyDaylightDuration,
             "dailyUVIndexMax": dailyUVIndexMax,
+            "daysMaxTemps": dailyMaxTemps,
+            "daysMinTemps": dailyMinTemps,
+            "daysPrecipitationTotals": dailyPrecipitationTotals,
+            "weekDays": weekDays,
             "timeStamp": DateTime.now().millisecondsSinceEpoch,
           };
         }
