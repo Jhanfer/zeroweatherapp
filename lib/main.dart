@@ -6,6 +6,8 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 import 'dart:ui';
+import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -40,18 +42,39 @@ void downloadCallback(String id, int status, int progress) {
 void notificationsCallback() {
   Workmanager().executeTask((taskName, inputdata) async {
     debugPrint("Ejecutando tarea en background: $taskName");
-    try {
-      final notificationsService = NotificationsService();
-      await notificationsService.showInstantNotificationBackground();
-      debugPrint("Tarea $taskName ejecutada exitosamente");
-    } catch (e) {
-      debugPrint("Error en tarea $taskName: $e");
+
+    if (taskName == "requestData") {
+      final weatherService = WeatherService();
+      try {
+        await Future.wait([
+          weatherService.getPosition(),
+          weatherService.loadStation(),
+        ]);
+        await weatherService.findNerbyStation();
+        await Future.wait([
+          weatherService.getForecast(),
+          weatherService.fetchMetarData(),
+          weatherService.getICA(),
+        ]);
+      } catch (e) {
+        debugPrint("Error en Workmanager: $e");
+      }
+    } else {
+      try {
+        final notificationsService = NotificationsService();
+        await notificationsService.showInstantNotificationBackground();
+        debugPrint("Tarea $taskName ejecutada exitosamente");
+      } catch (e) {
+        debugPrint("Error en tarea $taskName: $e");
+      }
     }
+
     return Future.value(true);
   });
 }
 
 // Función auxiliar para calcular el retardo inicial hasta la próxima hora deseada
+// ignore: unused_element
 Duration _calculateInitialDelay(int hour, int minute) {
   final now = DateTime.now();
   DateTime nextRun = DateTime(now.year, now.month, now.day, hour, minute);
@@ -105,6 +128,17 @@ void main() async {
   //    requiresBatteryNotLow: false,
   //  ), //Necesita internet
   //);
+
+  Workmanager().registerPeriodicTask(
+    "requestData",
+    "requestData",
+    frequency: Duration(hours: 1),
+    initialDelay: Duration.zero,
+    constraints: Constraints(
+      networkType: NetworkType.connected,
+      requiresBatteryNotLow: false,
+    ),
+  );
 
   //Workmanager().registerOneOffTask(
   //  "TareaForecastMañana_DEBUG",
@@ -252,10 +286,12 @@ class Checkers with ChangeNotifier {
   }
 }
 
-enum DayPhase { dawn, morning, noon, afternoon, sunset, night }
+enum DayPhase { nightBefore, dawn, morning, noon, afternoon, sunset, night }
 
 DayPhase getDayPhase(double progress) {
-  if (progress <= 0.2) {
+  if (progress < 0) {
+    return DayPhase.nightBefore;
+  } else if (progress <= 0.2) {
     return DayPhase.dawn;
   }
   if (progress <= 0.5) {
@@ -273,6 +309,20 @@ DayPhase getDayPhase(double progress) {
   return DayPhase.night;
 }
 
+class LightState {
+  final DateTime sunrise;
+  final DateTime sunset;
+  final double dayProgress;
+  final Map<String, dynamic>? cachedLightStates;
+
+  LightState({
+    required this.sunrise,
+    required this.sunset,
+    required this.dayProgress,
+    this.cachedLightStates,
+  });
+}
+
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
 
@@ -281,7 +331,7 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  double _dayProgress = 0.0;
+  double _dayProgress = -2.0;
   Color _mainColor = const Color.fromARGB(255, 10, 91, 119);
   Color _titleTextColor = const Color.fromARGB(255, 244, 240, 88);
   Color _secondaryColor = const Color.fromARGB(255, 2, 1, 34);
@@ -467,15 +517,28 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Color applyWeatherTimeToTexts(Color textColor, int weatherCode) {
     Color overlay;
-    if ((weatherCode >= 51 && weatherCode <= 67) ||
-        (weatherCode >= 80 && weatherCode <= 99)) {
-      //Lluvias, aguanieve o tormentas
-      overlay = const Color.fromARGB(255, 255, 255, 255);
-    } else {
-      //despejado
-      return textColor;
-    }
+    final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    switch (weatherRange.description) {
+      case Condition.rain ||
+          Condition.rainShowers ||
+          Condition.freezingRain ||
+          Condition.drizzle ||
+          Condition.freezingDrizzle ||
+          Condition.thunderstorm:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 200, 180, 168);
 
+      case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 200, 180, 168);
+
+      case Condition.thunderstormWithHail:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 200, 180, 168);
+
+      case _:
+        return textColor;
+    }
     final blendColor = Color.lerp(textColor, overlay, 0.5);
     final tintedColor = Color.fromARGB(
       ((textColor.a * 255.0).round() & 0xff),
@@ -487,79 +550,102 @@ class _MyHomePageState extends State<MyHomePage> {
     return tintedColor;
   }
 
-  Future<void> _updateDayProgressAndColors() async {
-    final forecastData = context.read<WeatherService>().forecastCachedData;
-    final metardata = context.read<WeatherService>().metarCacheData;
-    final cloudDescription = context.read<WeatherService>().cloudDescription;
-    _testing = "Funcionando ${DateTime.now()}";
-    final prefs = await SharedPreferences.getInstance();
-    final cacheKey = "DaylightDurationCached";
-    final cachedData = prefs.getString(cacheKey);
-    Map? cachedLightStates;
-
-    //Valores por defecto
-    double dayProgress = 0.0;
-    var sunrise = DateTime.now().toLocal();
-    var sunset = DateTime.now().add(const Duration(hours: 12)).toLocal();
-    int? daylightDurationMin;
-    bool isNight = true;
-    final now = DateTime.now();
-    int weatherCode = 0;
-    double testProgress = 1.0;
+  Future<LightState> _getDayProgress({
+    required SharedPreferences prefs,
+    required String cacheKey,
+    required dynamic cachedData,
+    required dynamic forecastData,
+    required Map<dynamic, dynamic> cloudDescription,
+    required int hoursMillisecondsLimit,
+    required DateTime now,
+  }) async {
+    DateTime sunset, sunrise;
+    double dayProgress;
+    int cachedTimeStamp;
+    Map<String, dynamic>? cachedLightStates;
 
     if (cachedData != null) {
       //Verificar si hay datos en la memoria caché
       final data = jsonDecode(cachedData);
-      final timeStamp = data["timeStamp"] ?? 0;
-      if (DateTime.now().millisecondsSinceEpoch - timeStamp <
-          4320 * 60 * 1000) {
+      cachedTimeStamp = data["timeStamp"] ?? 0;
+
+      if (DateTime.now().millisecondsSinceEpoch - cachedTimeStamp <
+          hoursMillisecondsLimit) {
         cachedLightStates = data;
+
+        //convertimos los datos a un objeto DateTime
+        final sunriseCached = DateTime.fromMillisecondsSinceEpoch(
+          cachedLightStates?["sunriseTimestamp"] ?? 0,
+        ).toLocal();
+        final sunsetCached = DateTime.fromMillisecondsSinceEpoch(
+          cachedLightStates?["sunsetTimestamp"] ?? 0,
+        ).toLocal();
+
+        sunrise = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          sunriseCached.hour,
+          sunriseCached.minute,
+          sunriseCached.second,
+        );
+
+        sunset = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          sunsetCached.hour,
+          sunsetCached.minute,
+          sunsetCached.second,
+        );
+
+        final totalDuration = cachedLightStates?["totalDuration"] ?? 0;
+        final currentDuration = now.difference(sunrise).inMinutes;
+
+        dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
+
+        final preSunrise = sunrise.subtract(const Duration(minutes: 30));
+        if (now.isBefore(preSunrise)) {
+          dayProgress = -0.5;
+        } else if (now.isBefore(sunrise)) {
+          final totalTransition = sunrise.difference(preSunrise).inSeconds;
+          final passed = now.difference(preSunrise).inSeconds;
+        } else if (now.isAfter(sunset)) {
+          dayProgress = 1.0;
+        }
+
+        return LightState(
+          sunrise: sunrise,
+          sunset: sunset,
+          dayProgress: dayProgress,
+          cachedLightStates: cachedLightStates,
+        );
       }
-      //convertimos los datos a un objeto DateTime
-      var sunriseCached = DateTime.fromMillisecondsSinceEpoch(
-        cachedLightStates!["sunriseTimestamp"],
-      ).toLocal();
-      var sunsetCached = DateTime.fromMillisecondsSinceEpoch(
-        cachedLightStates["sunsetTimestamp"],
-      ).toLocal();
+    }
 
-      sunrise = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        sunriseCached.hour,
-        sunriseCached.minute,
-        sunriseCached.second,
-      );
-
-      sunset = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        sunsetCached.hour,
-        sunsetCached.minute,
-        sunsetCached.second,
-      );
-
-      final totalDuration = cachedLightStates["totalDuration"];
-      isNight = now.isBefore(sunrise) || now.isAfter(sunset);
-
-      final currentDuration = now.difference(sunrise).inMinutes;
-      dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
-
-      debugPrint("Total duration : $sunrise");
-    } else if (forecastData != null &&
+    if (forecastData != null &&
         forecastData.isNotEmpty &&
         cloudDescription.isNotEmpty) {
       try {
         sunrise = DateTime.parse(forecastData["dailySunrise"]).toLocal();
         sunset = DateTime.parse(forecastData["dailySunset"]).toLocal();
-        final daylightDurationSeconds =
-            forecastData["dailyDaylightDuration"][0];
+
+        final daylightDurationSeconds = forecastData["dailyDaylightDuration"];
         final totalDuration = (daylightDurationSeconds / 60).round();
         final currentDuration = now.difference(sunrise).inMinutes;
-        isNight = now.isBefore(sunrise) || now.isAfter(sunset);
+
         dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
+
+        final preSunrise = sunrise.subtract(const Duration(minutes: 30));
+
+        if (now.isBefore(preSunrise)) {
+          dayProgress = -0.5;
+        } else if (now.isBefore(sunrise)) {
+          final totalTransition = sunrise.difference(preSunrise).inSeconds;
+          final passed = now.difference(preSunrise).inSeconds;
+        } else if (now.isAfter(sunset)) {
+          dayProgress = 1.0;
+        }
 
         // Guardar en caché datos reales
         cachedLightStates = {
@@ -568,27 +654,94 @@ class _MyHomePageState extends State<MyHomePage> {
           "totalDuration": totalDuration,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
         };
+
         final success = await prefs.setString(
           cacheKey,
           json.encode(cachedLightStates),
         );
         debugPrint("¿Guardado el progreso del día en caché?: $success");
+
+        return LightState(
+          sunrise: sunrise,
+          sunset: sunset,
+          dayProgress: dayProgress,
+          cachedLightStates: cachedLightStates,
+        );
       } catch (e) {
         debugPrint("Error parseando datos reales: $e");
       }
-    } else {
-      // Usar por defecto SIN GUARDAR EN CACHÉ
-      sunrise = DateTime(now.year, now.month, now.day, 6, 0);
-      sunset = DateTime(now.year, now.month, now.day, 18, 0);
-      isNight = now.isBefore(sunrise) || now.isAfter(sunset);
-      final totalDuration = sunset.difference(sunrise).inMinutes;
-      final currentDuration = now.difference(sunrise).inMinutes;
-      dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
-
-      debugPrint("Usando valores por defecto (no se guardarán)");
     }
 
+    // Usar por defecto
+    sunrise = DateTime(now.year, now.month, now.day, 6, 0);
+    sunset = DateTime(now.year, now.month, now.day, 18, 0);
+    final totalDuration = sunset.difference(sunrise).inMinutes;
+    final currentDuration = now.difference(sunrise).inMinutes;
+    dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
+
+    final preSunrise = sunrise.subtract(const Duration(minutes: 30));
+
+    if (now.isBefore(preSunrise)) {
+      dayProgress = -0.5;
+    } else if (now.isBefore(sunrise)) {
+      final totalTransition = sunrise.difference(preSunrise).inSeconds; // 1800s
+      final passed = now.difference(preSunrise).inSeconds;
+    } else if (now.isAfter(sunset)) {
+      dayProgress = 1.0;
+    }
+
+    debugPrint("Usando colores por defecto.");
+
+    return LightState(
+      sunrise: sunrise,
+      sunset: sunset,
+      dayProgress: dayProgress,
+      cachedLightStates: cachedLightStates,
+    );
+  }
+
+  Future<void> _updateDayProgressAndColors() async {
+    final forecastData = context.read<WeatherService>().forecastCachedData;
+    final metardata = context.read<WeatherService>().metarCacheData;
+    final cloudDescription = context.read<WeatherService>().cloudDescription;
+    _testing = "Funcionando ${DateTime.now()}";
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = "DaylightDurationCached";
+    final cachedData = prefs.getString(cacheKey);
+
+    //Valores por defecto
+    double dayProgress = 0.0;
+    var sunrise = DateTime.now().toLocal();
+    var sunset = DateTime.now().add(const Duration(hours: 12)).toLocal();
+    int? daylightDurationMin;
+    final now = DateTime.now();
+    //final now = DateTime.parse("2025-07-24 06:56:00");
+    int weatherCode = 0;
+    double testProgress = 0.9;
+    int? cachedTimeStamp;
+
+    const int hoursMillisecondsLimit = 33 * 60 * 60 * 1000;
+
+    if (metardata != null && metardata.isNotEmpty) {
+      weatherCode = metardata["weather_code"];
+    }
+
+    final LightState lightState = await _getDayProgress(
+      prefs: prefs,
+      cacheKey: cacheKey,
+      cachedData: cachedData,
+      forecastData: forecastData,
+      cloudDescription: cloudDescription,
+      hoursMillisecondsLimit: hoursMillisecondsLimit,
+      now: now,
+    );
+
+    sunrise = lightState.sunrise;
+    sunset = lightState.sunset;
+    dayProgress = lightState.dayProgress;
+
     debugPrint("El sunrise actual es $sunrise");
+    debugPrint("El WeatherCode es $weatherCode");
 
     if ((dayProgress - _dayProgress).abs() > 0.01) {
       _dayProgress = dayProgress;
@@ -599,6 +752,12 @@ class _MyHomePageState extends State<MyHomePage> {
     // Interpolación de colores para mainColor
     final dayPhase = getDayPhase(_dayProgress);
     switch (dayPhase) {
+      case DayPhase.nightBefore:
+        _mainColor = const Color.fromARGB(255, 231, 231, 250);
+        _titleTextColor = const Color.fromARGB(255, 226, 226, 255);
+        _secondaryColor = const Color.fromARGB(115, 120, 120, 180);
+        break;
+
       case DayPhase.dawn:
         _mainColor =
             Color.lerp(
@@ -755,10 +914,6 @@ class _MyHomePageState extends State<MyHomePage> {
             const Color.fromARGB(115, 120, 120, 180);
         break;
     }
-
-    _titleTextColor = applyWeatherTimeToTexts(_titleTextColor, weatherCode);
-    _mainColor = applyWeatherTimeToTexts(_mainColor, weatherCode);
-    _secondaryColor = applyWeatherTimeToTexts(_secondaryColor, weatherCode);
   }
 
   Future<void> _launchUrl() async {
@@ -773,11 +928,17 @@ class _MyHomePageState extends State<MyHomePage> {
     return Consumer<WeatherService>(
       builder: (context, weatherService, child) {
         _updateDayProgressAndColors();
+        debugPrint("$_dayProgress");
         final metarData = weatherService.metarCacheData;
         final forecastData = weatherService.forecastCachedData;
         var weatherCode = metarData?["weather_code"] ?? 0;
-        var cloudCover = metarData?["cloudCover"] ?? 0;
-        //final testWeatherCode = 99;
+        double cloudCover = metarData?["cloudCover"] ?? 0.0;
+
+        _titleTextColor = applyWeatherTimeToTexts(_titleTextColor, weatherCode);
+        _mainColor = applyWeatherTimeToTexts(_mainColor, weatherCode);
+        _secondaryColor = applyWeatherTimeToTexts(_secondaryColor, weatherCode);
+
+        //final testWeatherCode = 0;
         //final testCloudCover = 100;
         //weatherCode = testWeatherCode;
         //cloudCover = testCloudCover;
@@ -788,6 +949,8 @@ class _MyHomePageState extends State<MyHomePage> {
           return Scaffold(
             backgroundColor: Colors.transparent,
             body: MovingCloudsBackground(
+              shootingStars: ShootingStars(dayProgress: _dayProgress),
+              dynamicStars: DynamicStars(dayProgress: _dayProgress),
               weatherCode: weatherCode,
               cloudCover: (cloudCover as num).toDouble(),
               dynamicWeather: DynamicWeather(weatherCode: weatherCode),
@@ -829,6 +992,8 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
           backgroundColor: Colors.transparent,
           body: MovingCloudsBackground(
+            shootingStars: ShootingStars(dayProgress: _dayProgress),
+            dynamicStars: DynamicStars(dayProgress: _dayProgress),
             weatherCode: weatherCode,
             cloudCover: (cloudCover as num).toDouble(),
             dynamicWeather: DynamicWeather(weatherCode: weatherCode),
@@ -861,6 +1026,8 @@ class _MyHomePageState extends State<MyHomePage> {
                           mainAxisSize: MainAxisSize.max,
                           children: [
                             IndexPage(
+                              cloudCover: cloudCover,
+                              weatherCode: weatherCode,
                               weatherState: newWeatherApi,
                               mainColor: _mainColor,
                               separatedTemp: separatedTemp,
@@ -912,12 +1079,15 @@ class IndexPage extends StatefulWidget {
     required this.dayProgress,
     required this.sunrise,
     required this.sunset,
+    required this.weatherCode,
+    required this.cloudCover,
   });
   final WeatherService weatherState;
   final Color mainColor;
   final Color secondaryColor;
   final List<String> separatedTemp;
   final Color titleTextColor;
+  final int weatherCode;
 
   final List<double> tempByHours;
   final List<int> hours;
@@ -926,35 +1096,18 @@ class IndexPage extends StatefulWidget {
   final double dayProgress;
   final DateTime sunrise;
   final DateTime sunset;
+  final double cloudCover;
 
   @override
   State<IndexPage> createState() => _IndexPageState();
 }
 
 class _IndexPageState extends State<IndexPage> {
-  late final WeatherService weatherState;
-  late final List<String> separatedTemp;
-  late final List<double> tempByHours;
-  late final List<int> hours;
-  late final List<DateTime> dates;
-  late final List<double> precipitation;
-  late final double dayProgress;
-  late final DateTime sunrise;
-  late final DateTime sunset;
   late List<FlSpot> spots;
 
   @override
   void initState() {
     super.initState();
-    weatherState = widget.weatherState;
-    separatedTemp = widget.separatedTemp;
-    tempByHours = widget.tempByHours;
-    hours = widget.hours;
-    dates = widget.dates;
-    precipitation = widget.precipitation;
-    dayProgress = widget.dayProgress;
-    sunrise = widget.sunrise;
-    sunset = widget.sunset;
     _updateSpots();
   }
 
@@ -962,7 +1115,8 @@ class _IndexPageState extends State<IndexPage> {
   void didUpdateWidget(covariant IndexPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.tempByHours != oldWidget.tempByHours ||
-        widget.hours != oldWidget.hours) {
+        widget.hours != oldWidget.hours ||
+        !listEquals(widget.tempByHours, oldWidget.tempByHours)) {
       setState(() {
         _updateSpots();
       });
@@ -1024,8 +1178,59 @@ class _IndexPageState extends State<IndexPage> {
     return WeatherIcons.alien;
   }
 
+  String _getCondition(int weatherCode, double cloudCover) {
+    final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    switch (weatherRange.description) {
+      case Condition.cloudy:
+        return "Nublado";
+      case Condition.rain:
+        return "Lluvia";
+      case Condition.rainShowers:
+        return "Chubasco";
+      case Condition.freezingRain:
+        return "Lluvia helada";
+      case Condition.drizzle:
+        return "Llovizna";
+      case Condition.freezingDrizzle:
+        return "Llovizna helada";
+      case Condition.thunderstorm:
+        return "Tormenta eléctrica";
+      case Condition.snowFall:
+        return "Nieve";
+      case Condition.snowGrains:
+        return "Granos de nieve";
+      case Condition.snowShowers:
+        return "Chubasco de nieve";
+      case Condition.thunderstormWithHail:
+        return "Granizo";
+      case Condition.clear:
+        return "Despejado";
+      case _:
+        return "";
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final forecastData = widget.weatherState.forecastCachedData;
+    final metarData = widget.weatherState.metarCacheData;
+
+    var tempByHours = forecastData?["tempByHours"] ?? [0, 0, 0];
+    var siteName = widget.weatherState.siteName;
+    var maxTemp = forecastData?["maxTemp"] ?? 0;
+    var minTemp = forecastData?["minTemp"] ?? 0;
+    var dates = forecastData?["dates"] ?? [""];
+    var icaFinal = widget.weatherState.icaCache?["icaFinal"] ?? 0;
+
+    var heatIndex = metarData?["heatIndex"] ?? 0;
+
+    var cloudDescription = widget.weatherState.cloudDescription.isNotEmpty
+        ? widget.weatherState.cloudDescription.keys.first
+        : "No disponible";
+
+    var precipitationByHoursTypes =
+        forecastData!["precipitationByHoursTypes"] ?? ["default", "default"];
+
     var intigerPart = widget.separatedTemp[0];
     final linechartbardata = LineChartBarData(
       show: true,
@@ -1069,7 +1274,11 @@ class _IndexPageState extends State<IndexPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  weatherState.siteName,
+                  _getCondition(widget.weatherCode, widget.cloudCover),
+                  style: TextStyle(fontSize: 25, color: widget.mainColor),
+                ),
+                Text(
+                  siteName,
                   style: TextStyle(fontSize: 30, color: widget.mainColor),
                 ),
                 Row(
@@ -1133,11 +1342,13 @@ class _IndexPageState extends State<IndexPage> {
                         },
                         child: Padding(
                           key: ValueKey(
-                            separatedTemp.isNotEmpty ? separatedTemp[1] : 0,
+                            widget.separatedTemp.isNotEmpty
+                                ? widget.separatedTemp[1]
+                                : 0,
                           ),
                           padding: const EdgeInsets.only(top: 0),
                           child: Text(
-                            "${separatedTemp.isNotEmpty ? separatedTemp[1][0] : 0}",
+                            "${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1][0] : 0}",
                             style: GoogleFonts.kanit(
                               fontSize: 90,
                               color: widget.titleTextColor,
@@ -1163,7 +1374,7 @@ class _IndexPageState extends State<IndexPage> {
             ),
             Flexible(
               child: Text(
-                "↑${weatherState.forecastCachedData!["maxTemp"]}°/↓${weatherState.forecastCachedData!["minTemp"]}°",
+                "↑$maxTemp°/↓$minTemp°",
                 style: GoogleFonts.kanit(
                   fontSize: 27,
                   color: widget.mainColor,
@@ -1173,7 +1384,7 @@ class _IndexPageState extends State<IndexPage> {
             ),
             Flexible(
               child: Text(
-                "Sensación térmica: ${weatherState.metarCacheData!["heatIndex"]} °C",
+                "Sensación térmica: $heatIndex °C",
                 style: GoogleFonts.kanit(
                   fontSize: 27,
                   color: widget.mainColor,
@@ -1192,7 +1403,7 @@ class _IndexPageState extends State<IndexPage> {
                 ),
                 child: Column(
                   children: [
-                    tempByHours.isEmpty && hours.isEmpty
+                    tempByHours.isEmpty && widget.hours.isEmpty
                         ? Center(
                             child: SizedBox(
                               width: 100,
@@ -1212,7 +1423,7 @@ class _IndexPageState extends State<IndexPage> {
                               children: [
                                 Flexible(
                                   child: Text(
-                                    "Cielo ${weatherState.cloudDescription.keys.first} ",
+                                    "Cielo $cloudDescription ",
                                     style: GoogleFonts.kanit(
                                       fontSize: 20,
                                       color: Colors.white,
@@ -1221,7 +1432,16 @@ class _IndexPageState extends State<IndexPage> {
                                   ),
                                 ),
                                 Icon(
-                                  weatherState.cloudDescription.values.single,
+                                  widget
+                                          .weatherState
+                                          .cloudDescription
+                                          .isNotEmpty
+                                      ? widget
+                                            .weatherState
+                                            .cloudDescription
+                                            .values
+                                            .single
+                                      : Icons.cancel,
                                   color: Colors.white,
                                 ),
                               ],
@@ -1253,19 +1473,35 @@ class _IndexPageState extends State<IndexPage> {
                                   getTooltipItems:
                                       (List<LineBarSpot> touchedSpots) {
                                         return touchedSpots.map((barSpot) {
-                                          final hour =
-                                              hours[barSpot
+                                          final hour24 =
+                                              widget.hours[barSpot
                                                   .spotIndex]; // lista de horas
+                                          final time = TimeOfDay(
+                                            hour: hour24,
+                                            minute: 0,
+                                          );
+                                          final hour12 = time.hourOfPeriod == 0
+                                              ? 12
+                                              : time.hourOfPeriod;
+                                          final amPm =
+                                              time.period == DayPeriod.am
+                                              ? "AM"
+                                              : "PM";
+
                                           final temp = barSpot.y
                                               .toStringAsFixed(
                                                 1,
                                               ); // temperatura
-                                          final precip =
-                                              precipitation[barSpot.spotIndex]
-                                                  .toInt(); // precipitación
+                                          final precip = widget
+                                              .precipitation[barSpot.spotIndex]
+                                              .toInt(); // precipitación
+
+                                          final precipitationType =
+                                              precipitationByHoursTypes[barSpot
+                                                  .spotIndex];
 
                                           return LineTooltipItem(
-                                            "$hour H\n $temp°C\n☔ $precip%",
+                                            "$hour12 $amPm \n $temp°C\n$precipitationType $precip%",
                                             GoogleFonts.kanit(
                                               color: Colors.white,
                                             ),
@@ -1376,9 +1612,7 @@ class _IndexPageState extends State<IndexPage> {
                             ),
 
                             Text(
-                              _getICAMessages(
-                                weatherState.icaCache!["icaFinal"] ?? 0,
-                              ).values.first,
+                              _getICAMessages(icaFinal).values.first,
                               style: GoogleFonts.kanit(
                                 fontSize: 15,
                                 color: Colors.white,
@@ -1389,7 +1623,7 @@ class _IndexPageState extends State<IndexPage> {
 
                             Flexible(
                               child: Text(
-                                "${_getICAMessages(weatherState.icaCache!["icaFinal"] ?? 0).keys.first} (${weatherState.icaCache!["icaFinal"] ?? 0})",
+                                "${_getICAMessages(icaFinal).keys.first} ($icaFinal)",
                                 style: GoogleFonts.kanit(
                                   fontSize: 20,
                                   color: Colors.white,
@@ -1406,16 +1640,9 @@ class _IndexPageState extends State<IndexPage> {
                                     Radius.circular(600),
                                   ),
                                   backgroundColor: widget.mainColor,
-                                  value:
-                                      ((weatherState.icaCache!["icaFinal"] ??
-                                              0 * 100 / 100) ??
-                                          0) /
-                                      500,
+                                  value: ((icaFinal * 100 / 100) ?? 0) / 500,
                                   color: _getColor(
-                                    ((weatherState.icaCache!["icaFinal"] ??
-                                                0 * 100 / 100) ??
-                                            0) /
-                                        500,
+                                    ((icaFinal * 100 / 100) ?? 0) / 500,
                                   ),
                                 ),
                               ),
@@ -1425,7 +1652,7 @@ class _IndexPageState extends State<IndexPage> {
                       ),
                       Flexible(
                         child: Icon(
-                          _getICAIcons(weatherState.icaCache!["icaFinal"] ?? 0),
+                          _getICAIcons(icaFinal),
                           size: 50,
                           color: Colors.white,
                         ),
@@ -1435,22 +1662,149 @@ class _IndexPageState extends State<IndexPage> {
                 ),
               ),
             ),
-            WeekForecast(widget: widget, weatherState: weatherState),
+            WeekForecast(widget: widget, weatherState: widget.weatherState),
+            Recomendations(widget: widget),
             Cards(
-              weatherState: weatherState,
+              weatherState: widget.weatherState,
               mainColor: widget.mainColor,
               secondaryColor: widget.secondaryColor,
               titleTextColor: widget.titleTextColor,
             ),
             SunCurve(
               progress: widget.dayProgress,
-              sunrise: sunrise,
-              sunset: sunset,
+              sunrise: widget.sunrise,
+              sunset: widget.sunset,
               mainColor: widget.mainColor,
               secondaryColor: widget.secondaryColor,
               titleTextColor: widget.titleTextColor,
             ),
           ],
+        );
+      },
+    );
+  }
+}
+
+class Recomendations extends StatelessWidget {
+  const Recomendations({super.key, required this.widget});
+
+  final IndexPage widget;
+
+  List<String> _getRecommendations(
+    double temperature,
+    double humidity,
+    double heatIndex,
+    double windSpeed,
+    double precipitation,
+    int uvIndex,
+    double dewPoint,
+  ) {
+    List<String> recommendations = [];
+
+    debugPrint("precipitaciones $precipitation");
+
+    if (heatIndex < 5) {
+      recommendations.add("Usa abrigo pesado. Mucho frio.");
+    } else if (heatIndex < 15) {
+      recommendations.add("Usa abrigo ligero. Algo de frio.");
+    } else if (heatIndex < 28) {
+      recommendations.add("Usa ropa fresca, hace calor.");
+    } else if (heatIndex > 28) {
+      recommendations.add("Usa ropa muy fresca. Hace mucho calor.");
+    }
+    if (windSpeed > 30) {
+      recommendations.add("Protégete del viento.");
+    }
+    if (precipitation > 0.5) {
+      recommendations.add("Lleva un paraguas.");
+    }
+    if (humidity > 80 && dewPoint > 20) {
+      recommendations.add("Hídrátate bien.");
+    }
+    if (uvIndex > 6) {
+      recommendations.add("Usa protector solar.");
+    }
+    return recommendations;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final metarData = widget.weatherState.metarCacheData;
+    final forecastData = widget.weatherState.forecastCachedData;
+
+    final temperature = metarData?["temperature"] ?? 0.0;
+    final humidity = metarData?["humidity"] ?? 0.0;
+    final heatIndex = double.parse(metarData?["heatIndex"] ?? "0.0");
+    final windSpeed = metarData?["windSpeed"] ?? 0.0;
+    final precipitation = metarData?["precipitation"] ?? 0.0;
+    final uvIndex = metarData?["uvIndex"] ?? 0;
+    final dewPoint = metarData?["dewPoint"] ?? 0.0;
+
+    var precipitationByHours =
+        forecastData?["precipitationByHours"] ?? [0, 0, 0];
+
+    return LayoutBuilder(
+      builder: (context, constraits) {
+        return Card(
+          elevation: 4,
+          color: widget.secondaryColor,
+          child: Padding(
+            padding: const EdgeInsets.all(15),
+            child: SizedBox(
+              width: constraits.maxWidth - 80,
+              child: Column(
+                spacing: 10,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        "Recomendaciones ",
+                        style: GoogleFonts.kanit(
+                          color: Colors.white,
+                          fontSize: 15,
+                        ),
+                      ),
+                      Icon(Icons.recommend, color: Colors.white, size: 18),
+                    ],
+                  ),
+                  Column(
+                    spacing: 5,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(
+                      _getRecommendations(
+                        temperature,
+                        humidity,
+                        heatIndex,
+                        windSpeed,
+                        precipitationByHours[0],
+                        uvIndex,
+                        dewPoint,
+                      ).length,
+                      (index) {
+                        return Text(
+                          _getRecommendations(
+                            temperature,
+                            humidity,
+                            heatIndex,
+                            windSpeed,
+                            precipitationByHours[0],
+                            uvIndex,
+                            dewPoint,
+                          )[index],
+                          style: GoogleFonts.kanit(
+                            color: Colors.white,
+                            fontSize: 14,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         );
       },
     );
@@ -1469,6 +1823,14 @@ class WeekForecast extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final forecastData = widget.weatherState.forecastCachedData;
+
+    var daysMaxTemps = forecastData?["daysMaxTemps"] ?? [0, 0, 0, 0, 0];
+    var daysMinTemps = forecastData?["daysMinTemps"] ?? [0, 0, 0, 0, 0];
+    var daysPrecipitationTotals =
+        forecastData?["daysPrecipitationTotals"] ?? [0, 0, 0, 0, 0];
+    var weekDays = forecastData?["weekDays"] ?? ["hoy", "mañana"];
+
     return LayoutBuilder(
       builder: (context, constraits) {
         return Card(
@@ -1480,76 +1842,72 @@ class WeekForecast extends StatelessWidget {
               width: constraits.maxWidth - 80,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: List.generate(
-                  weatherState.forecastCachedData!["weekDays"].length,
-                  (index) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: Text(
-                              weatherState
-                                  .forecastCachedData!["weekDays"][index],
-                              style: GoogleFonts.kanit(
-                                color: Colors.white,
-                                fontSize: 14,
+                children: List.generate(weekDays.length, (index) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            weekDays[index],
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            spacing: 0,
+                            children: [
+                              Text(
+                                "${daysPrecipitationTotals[index]}%  ",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
                               ),
-                              textAlign: TextAlign.left,
-                            ),
+                              Icon(
+                                WeatherIcons.raindrop,
+                                color: widget.titleTextColor,
+                                size: 15,
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            flex: 2,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              spacing: 0,
-                              children: [
-                                Text(
-                                  "${weatherState.forecastCachedData!["daysPrecipitationTotals"][index]}%  ",
-                                  style: GoogleFonts.kanit(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                "↑ ${(daysMaxTemps[index] as num).toInt()}°",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
                                 ),
-                                Icon(
-                                  WeatherIcons.raindrop,
-                                  color: widget.titleTextColor,
-                                  size: 15,
+                              ),
+                              Text(
+                                "↓ ${(daysMinTemps[index] as num).toInt()}°",
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            flex: 2,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  "↑ ${(weatherState.forecastCachedData!["daysMaxTemps"][index] as num).toInt()}°",
-                                  style: GoogleFonts.kanit(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                                Text(
-                                  "↓ ${(weatherState.forecastCachedData!["daysMinTemps"][index] as num).toInt()}°",
-                                  style: GoogleFonts.kanit(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
               ),
             ),
           ),
@@ -1598,6 +1956,20 @@ class _SunCurveState extends State<SunCurve> {
 
   @override
   Widget build(BuildContext context) {
+    final sunset24Hour = TimeOfDay(hour: sunset.hour, minute: sunset.minute);
+    final sunset12Hour = sunset24Hour.hourOfPeriod == 0
+        ? 12
+        : sunset24Hour.hourOfPeriod;
+    final sunsetAmPm = sunset24Hour.period == DayPeriod.am ? "AM" : "PM";
+    final sunsetHour = "${sunset24Hour.hourOfPeriod}:${sunset24Hour.minute}";
+
+    final sunrise24Hour = TimeOfDay(hour: sunrise.hour, minute: sunrise.minute);
+    final sunrise12Hour = sunrise24Hour.hourOfPeriod == 0
+        ? 12
+        : sunrise24Hour.hourOfPeriod;
+    final sunriseAmPm = sunrise24Hour.period == DayPeriod.am ? "AM" : "PM";
+    final sunriseHour = "${sunrise24Hour.hourOfPeriod}:${sunrise24Hour.minute}";
+
     return LayoutBuilder(
       builder: (context, constraits) {
         final double availableWith = constraits.maxWidth;
@@ -1630,7 +2002,7 @@ class _SunCurveState extends State<SunCurve> {
                             ),
                           ),
                           Text(
-                            "${sunrise.hour}:${sunrise.minute}",
+                            "$sunriseHour $sunriseAmPm",
                             style: GoogleFonts.kanit(color: Colors.white),
                           ),
                         ],
@@ -1645,7 +2017,7 @@ class _SunCurveState extends State<SunCurve> {
                             ),
                           ),
                           Text(
-                            "${sunset.hour}:${sunset.minute}",
+                            "$sunsetHour $sunsetAmPm",
                             style: GoogleFonts.kanit(color: Colors.white),
                           ),
                         ],
@@ -1690,11 +2062,17 @@ class StartPage extends StatelessWidget {
                   children: [
                     Text(
                       "ZERO",
-                      style: TextStyle(fontSize: 25, color: mainColor),
+                      style: TextStyle(
+                        fontSize: 25,
+                        color: Color.alphaBlend(mainColor, Colors.black),
+                      ),
                     ),
                     Text(
                       "WEATHER",
-                      style: TextStyle(fontSize: 25, color: secondaryColor),
+                      style: TextStyle(
+                        fontSize: 25,
+                        color: Color.alphaBlend(secondaryColor, Colors.black),
+                      ),
                     ),
                   ],
                 ),
@@ -1844,10 +2222,27 @@ class Cards extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final forecastData = weatherState.forecastCachedData;
+    final metarData = weatherState.metarCacheData;
     final double uv =
         (weatherState.forecastCachedData!["dailyUVIndexMax"][0] ?? 1)
             .toDouble();
     final double clampedUV = uv.clamp(0.0, 11.0);
+
+    var dailyUVMax = forecastData?["dailyUVIndexMax"][0] ?? 1;
+    var precipitationByHours =
+        forecastData?["precipitationByHours"] ?? [0, 0, 0];
+
+    var temperature = metarData?["temperature"] ?? 0.0;
+    var windSpeed = metarData?["windSpeed"] ?? 0;
+    var windDirection = metarData?["windDirection"] ?? 0.0;
+    var dewPoint = metarData?["dewPoint"] ?? 0.0;
+    var humidity = metarData?["humidity"] ?? 0.0;
+    var pressure = metarData?["pressure"] ?? 0.0;
+    var condition = metarData?["condition"] ?? "Na";
+    var currentPrecipitation = metarData?["currentPrecipitation"] ?? "Na";
+    var currentSurfacePressure = metarData?["currentSurfacePressure"] ?? "Na";
+
     return Container(
       margin: const EdgeInsets.all(1),
       child: LayoutBuilder(
@@ -1897,31 +2292,25 @@ class Cards extends StatelessWidget {
                           ],
                         ),
                       ),
-                      Text(
-                        _getuvmessage(
-                          (weatherState
-                                      .forecastCachedData!["dailyUVIndexMax"][0] ??
-                                  1) /
-                              10,
-                        ).entries.first.value,
-                        style: GoogleFonts.kanit(
-                          fontSize: 15,
-                          color: Colors.white,
-                        ),
-                      ),
+
                       Padding(
                         padding: EdgeInsetsGeometry.only(top: 5),
                         child: Column(
+                          spacing: 2,
                           mainAxisAlignment: MainAxisAlignment.start,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               _getuvmessage(
-                                (weatherState
-                                            .forecastCachedData!["dailyUVIndexMax"][0] ??
-                                        1) /
-                                    10,
-                              ).keys.first,
+                                (dailyUVMax) / 10,
+                              ).entries.first.value,
+                              style: GoogleFonts.kanit(
+                                fontSize: 15,
+                                color: Colors.white,
+                              ),
+                            ),
+                            Text(
+                              _getuvmessage((dailyUVMax) / 10).keys.first,
                               style: GoogleFonts.kanit(
                                 fontSize: fontCardSize,
                                 color: Colors.white,
@@ -2001,7 +2390,7 @@ class Cards extends StatelessWidget {
                                       ),
                                       child: Center(
                                         child: Text(
-                                          "${weatherState.forecastCachedData!["dailyUVIndexMax"][0].toInt()}",
+                                          "${dailyUVMax.toInt()}",
                                           style: GoogleFonts.kanit(
                                             height: -0.1,
                                             fontSize: 16,
@@ -2050,7 +2439,7 @@ class Cards extends StatelessWidget {
                         ],
                       ),
                       Text(
-                        "${weatherState.metarCacheData!["windSpeed"]} km/h",
+                        "$windSpeed km/h",
                         style: GoogleFonts.kanit(
                           color: Colors.white,
                           fontSize: fontCardSize,
@@ -2183,10 +2572,7 @@ class Cards extends StatelessWidget {
                             ),
 
                             Transform.rotate(
-                              angle:
-                                  weatherState
-                                      .metarCacheData!["widDirection"] ??
-                                  0,
+                              angle: (windDirection + 180) * pi / 180,
                               child: Icon(
                                 Icons.navigation,
                                 size: 40,
@@ -2235,9 +2621,7 @@ class Cards extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Text(
                             _getPressureAlertMessage(
-                              double.parse(
-                                weatherState.metarCacheData!["pressure"] ?? 0,
-                              ),
+                              double.parse(pressure),
                             ).values.first,
                             style: GoogleFonts.kanit(
                               fontSize: 14,
@@ -2254,9 +2638,7 @@ class Cards extends StatelessWidget {
                         children: [
                           Text(
                             _getPressureAlertMessage(
-                              double.parse(
-                                weatherState.metarCacheData!["pressure"],
-                              ),
+                              double.parse(pressure),
                             ).keys.first,
                             style: GoogleFonts.kanit(
                               fontSize: fontCardSize - 1,
@@ -2266,7 +2648,7 @@ class Cards extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                           Text(
-                            "${weatherState.metarCacheData!["pressure"]} hPa",
+                            "$pressure hPa",
                             style: GoogleFonts.kanit(
                               fontSize: fontCardSize - 2,
                               color: Colors.white,
@@ -2280,11 +2662,7 @@ class Cards extends StatelessWidget {
                               borderRadius: BorderRadius.all(
                                 Radius.circular(600),
                               ),
-                              value:
-                                  (double.parse(
-                                    weatherState.metarCacheData!["pressure"],
-                                  )) /
-                                  2000,
+                              value: (double.parse(pressure)) / 2000,
                               color: titleTextColor,
                               backgroundColor: mainColor,
                             ),
@@ -2332,8 +2710,7 @@ class Cards extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Text(
                             _getPrecipitationMessage(
-                              weatherState
-                                  .forecastCachedData!["precipitationByHours"][0],
+                              precipitationByHours[0],
                             ).values.first,
                             style: GoogleFonts.kanit(
                               fontSize: 15,
@@ -2353,8 +2730,7 @@ class Cards extends StatelessWidget {
                         children: [
                           Text(
                             _getPrecipitationMessage(
-                              weatherState
-                                  .forecastCachedData!["precipitationByHours"][0],
+                              precipitationByHours[0],
                             ).keys.first,
                             style: GoogleFonts.kanit(
                               fontSize: fontCardSize,
@@ -2363,7 +2739,7 @@ class Cards extends StatelessWidget {
                             ),
                           ),
                           Text(
-                            "${weatherState.forecastCachedData!["precipitationByHours"][0]} mm",
+                            "${precipitationByHours[0]} mm",
                             style: GoogleFonts.kanit(
                               fontSize: fontCardSize,
                               color: Colors.white,
@@ -2410,10 +2786,7 @@ class Cards extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _getDewPointClassification(
-                                weatherState.metarCacheData!["dewPoint"],
-                                weatherState.metarCacheData!["temperature"],
-                              ),
+                              _getDewPointClassification(dewPoint, temperature),
                               style: GoogleFonts.kanit(
                                 fontSize: fontCardSize,
                                 color: Colors.white,
@@ -2421,7 +2794,7 @@ class Cards extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              "${weatherState.metarCacheData!["dewPoint"]} °C",
+                              "$dewPoint °C",
                               style: TextStyle(
                                 fontSize: 30,
                                 fontWeight: FontWeight.w300,
@@ -2470,9 +2843,7 @@ class Cards extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _getHumidityMessage(
-                                (weatherState.metarCacheData!["humidity"] ?? 1),
-                              ).values.first,
+                              _getHumidityMessage((humidity)).values.first,
                               style: GoogleFonts.kanit(
                                 fontSize: 17,
                                 color: Colors.white,
@@ -2481,7 +2852,7 @@ class Cards extends StatelessWidget {
                             ),
                             SizedBox(height: 4),
                             Text(
-                              "${weatherState.metarCacheData!["humidity"]} %",
+                              "$humidity %",
                               style: GoogleFonts.kanit(
                                 fontSize: fontCardSize + 2,
                                 color: Colors.white,
@@ -2494,10 +2865,7 @@ class Cards extends StatelessWidget {
                                 borderRadius: BorderRadius.all(
                                   Radius.circular(600),
                                 ),
-                                value:
-                                    (weatherState.metarCacheData!["humidity"] ??
-                                        1) /
-                                    100,
+                                value: (humidity) / 100,
                                 color: titleTextColor,
                                 backgroundColor: mainColor,
                               ),
@@ -2517,12 +2885,317 @@ class Cards extends StatelessWidget {
   }
 }
 
+class Range {
+  final int min;
+  final int max;
+  const Range(this.min, this.max);
+  bool contains(int value) {
+    if (value >= min && value <= max) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+}
+
+enum Condition {
+  clear,
+  cloudy,
+  fog,
+  drizzle,
+  freezingDrizzle,
+  rain,
+  freezingRain,
+  snowFall,
+  snowGrains,
+  rainShowers,
+  snowShowers,
+  thunderstorm,
+  thunderstormWithHail,
+  unknown,
+}
+
+class WeatherCodesRanges {
+  final int weatherCode;
+  late final Range? range;
+  late final Condition description;
+  late final int intensity;
+
+  WeatherCodesRanges({required this.weatherCode}) {
+    const List<MapEntry<Range, Condition>> weatherCodeRanges = [
+      MapEntry(Range(0, 0), Condition.clear),
+      MapEntry(Range(1, 3), Condition.cloudy),
+      MapEntry(Range(45, 48), Condition.fog),
+      MapEntry(Range(51, 55), Condition.drizzle),
+      MapEntry(Range(56, 57), Condition.freezingDrizzle),
+      MapEntry(Range(61, 65), Condition.rain),
+      MapEntry(Range(66, 67), Condition.freezingRain),
+      MapEntry(Range(71, 75), Condition.snowFall),
+      MapEntry(Range(77, 77), Condition.snowGrains),
+      MapEntry(Range(80, 82), Condition.rainShowers),
+      MapEntry(Range(85, 86), Condition.snowShowers),
+      MapEntry(Range(95, 95), Condition.thunderstorm),
+      MapEntry(Range(96, 99), Condition.thunderstormWithHail),
+    ];
+
+    final match = weatherCodeRanges.firstWhere(
+      (element) => element.key.contains(weatherCode),
+      orElse: () => MapEntry(const Range(-1, -1), Condition.unknown),
+    );
+
+    range = match.key.min == -1 ? null : match.key;
+    description = match.value;
+    intensity = _getIntensity(description);
+  }
+
+  int _getIntensity(Condition description) {
+    switch (description) {
+      case Condition.clear:
+        return 0;
+      case Condition.cloudy:
+        return 20;
+      case Condition.fog:
+        return 30;
+      case Condition.drizzle:
+        return 40;
+      case Condition.freezingDrizzle:
+        return 50;
+      case Condition.rain:
+        return 60;
+      case Condition.freezingRain:
+        return 70;
+      case Condition.snowFall:
+        return 80;
+      case Condition.snowGrains:
+        return 90;
+      case Condition.rainShowers:
+        return 95;
+      case Condition.snowShowers:
+        return 98;
+      case Condition.thunderstorm:
+        return 99;
+      case Condition.thunderstormWithHail:
+        return 100;
+      default:
+        return 0;
+    }
+  }
+}
+
+class DynamicStars extends StatefulWidget {
+  final double dayProgress;
+  const DynamicStars({super.key, required this.dayProgress});
+  @override
+  _DynamicStartsState createState() => _DynamicStartsState();
+}
+
+class _DynamicStartsState extends State<DynamicStars>
+    with SingleTickerProviderStateMixin {
+  late double dayProgress;
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _controller = AnimationController(
+      vsync: this,
+      duration: Duration(seconds: 500),
+    )..repeat();
+    dayProgress = widget.dayProgress;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        return CustomPaint(
+          painter: StarsPainter(
+            dayProgress: widget.dayProgress,
+            animation: _controller.value,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class StarsPainter extends CustomPainter {
+  const StarsPainter({required this.dayProgress, required this.animation});
+  final double dayProgress;
+  final double animation;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    double customDayProgress = dayProgress;
+    if (dayProgress < -0.6 || dayProgress >= 0.2 && dayProgress <= 0.8) return;
+
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final Random random = Random(23);
+
+    for (int i = 0; i < 150; i++) {
+      final dx = random.nextDouble() * size.width;
+      final dy = random.nextDouble() * size.height;
+      final double radius = 0.5 + random.nextDouble() * 1.5;
+
+      final double offset = random.nextDouble() * pi * 2;
+      final double flicker =
+          0.5 + 0.5 * sin(animation * 2 * pi * 0.15 + offset);
+
+      if (customDayProgress <= 0.2) {
+        customDayProgress = 1.0;
+      }
+
+      final double baseOpacity = ((customDayProgress - 0.7) * 1.0).clamp(
+        0.0,
+        1.0,
+      );
+      final double alpha = (baseOpacity * flicker * 255).clamp(0, 255) * 2;
+
+      paint.color = Colors.white.withAlpha(alpha.toInt());
+      canvas.drawCircle(Offset(dx, dy), radius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(StarsPainter oldDelegate) {
+    return dayProgress != oldDelegate.dayProgress;
+  }
+}
+
+class ShootingStars extends StatefulWidget {
+  const ShootingStars({super.key, required this.dayProgress});
+  final double dayProgress;
+
+  @override
+  _ShootingStarsState createState() => _ShootingStarsState();
+}
+
+class _ShootingStarsState extends State<ShootingStars>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  double _progress = 0.0;
+  late final double dayProgress;
+  bool _isVisible = false;
+  Offset _start = Offset.zero;
+  double _angle = 0.0;
+  final Random _random = Random();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller =
+        AnimationController(duration: Duration(milliseconds: 1000), vsync: this)
+          ..addListener(() {
+            setState(() {
+              _progress = _controller.value;
+            });
+          });
+    dayProgress = widget.dayProgress;
+    _startShootingStar();
+  }
+
+  void _startShootingStar() {
+    _start = Offset(_random.nextDouble() * 500, _random.nextDouble() * 300);
+    _angle = (pi / 4) + (_random.nextDouble() - 0.5) * pi / 6;
+    if ((widget.dayProgress >= -0.6 && widget.dayProgress <= 0.2) ||
+        widget.dayProgress >= 0.8) {
+      _isVisible = true;
+    }
+
+    _controller.forward(from: 0.0).then((_) {
+      setState(() {
+        _isVisible = false;
+      });
+
+      Future.delayed(Duration(milliseconds: 2000 + _random.nextInt(3000)), () {
+        _startShootingStar();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: ShootingStarPainter(
+        progress: _progress,
+        isVisible: _isVisible,
+        start: _start,
+        angle: _angle,
+      ),
+      size: Size.infinite,
+    );
+  }
+}
+
+class ShootingStarPainter extends CustomPainter {
+  final double progress;
+  final bool isVisible;
+  final Offset start;
+  final double angle;
+
+  const ShootingStarPainter({
+    required this.progress,
+    required this.isVisible,
+    required this.start,
+    required this.angle,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (!isVisible) return;
+
+    final double length = 200.0;
+
+    final Offset current = Offset(
+      start.dx + length * cos(angle) * progress,
+      start.dy + length * sin(angle) * progress,
+    );
+
+    final Offset tail = Offset(
+      current.dx - 60 * cos(angle),
+      current.dy - 60 * sin(angle),
+    );
+
+    final tailPaint = Paint()
+      ..shader = ui.Gradient.linear(current, tail, [
+        Colors.white.withAlpha((0.6 * (1 - progress) * 255).toInt()),
+        Colors.white.withAlpha(0),
+      ])
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final headPaint = Paint()
+      ..color = Colors.white.withAlpha((0.8 * (1 - progress) * 255).toInt())
+      ..style = PaintingStyle.fill;
+
+    canvas.drawLine(tail, current, tailPaint);
+    canvas.drawCircle(current, 3.0, headPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
+
 class MovingCloudsBackground extends StatefulWidget {
   final Widget child;
   final Widget dynamicWeather;
+  final Widget dynamicStars;
   final double dayProgress;
   final double cloudCover;
   final int weatherCode;
+  final Widget shootingStars;
   const MovingCloudsBackground({
     super.key,
     required this.child,
@@ -2530,6 +3203,8 @@ class MovingCloudsBackground extends StatefulWidget {
     required this.dynamicWeather,
     required this.cloudCover,
     required this.weatherCode,
+    required this.dynamicStars,
+    required this.shootingStars,
   });
 
   @override
@@ -2585,6 +3260,10 @@ class _MovingCloudsBackgroundState extends State<MovingCloudsBackground>
 
           child: Stack(
             children: [
+              Positioned.fill(child: IgnorePointer(child: widget.dynamicStars)),
+              Positioned.fill(
+                child: IgnorePointer(child: widget.shootingStars),
+              ),
               Positioned.fill(
                 child: IgnorePointer(child: widget.dynamicWeather),
               ),
@@ -2619,36 +3298,98 @@ class CloudyBakcgroundPainter extends CustomPainter {
     int weatherCode,
   ) {
     Color overlay;
-    if ((weatherCode >= 51 && weatherCode <= 67) ||
-        (weatherCode >= 80 && weatherCode <= 99)) {
-      //Lluvias, aguanieve o tormentas
-      overlay = const Color.fromARGB(178, 85, 85, 85);
-    } else {
-      //despejado
-      return basebackground;
+    final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    switch (weatherRange.description) {
+      case Condition.rain ||
+          Condition.rainShowers ||
+          Condition.freezingRain ||
+          Condition.drizzle ||
+          Condition.freezingDrizzle ||
+          Condition.thunderstorm:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(
+          (intensity * 1.9 as num).toInt(),
+          150,
+          150,
+          150,
+        );
+        List<Color> tintedColors = basebackground.colors.map((color) {
+          return Color.alphaBlend(overlay, color);
+        }).toList();
+        return LinearGradient(
+          begin: basebackground.begin,
+          end: basebackground.end,
+          colors: tintedColors,
+          stops: basebackground.stops,
+        );
+
+      case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(
+          (intensity * 2 / 0.5 as num).toInt(),
+          150,
+          150,
+          150,
+        );
+        List<Color> tintedColors = basebackground.colors.map((color) {
+          return Color.alphaBlend(overlay, color);
+        }).toList();
+        return LinearGradient(
+          begin: basebackground.begin,
+          end: basebackground.end,
+          colors: tintedColors,
+          stops: basebackground.stops,
+        );
+
+      case Condition.thunderstormWithHail:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(
+          (intensity * 2 / 0.57 as num).toInt(),
+          150,
+          150,
+          150,
+        );
+        List<Color> tintedColors = basebackground.colors.map((color) {
+          return Color.alphaBlend(overlay, color);
+        }).toList();
+        return LinearGradient(
+          begin: basebackground.begin,
+          end: basebackground.end,
+          colors: tintedColors,
+          stops: basebackground.stops,
+        );
+
+      case _:
+        return basebackground;
     }
-
-    List<Color> tintedColors = basebackground.colors.map((color) {
-      return Color.alphaBlend(overlay, color);
-    }).toList();
-
-    return LinearGradient(
-      begin: basebackground.begin,
-      end: basebackground.end,
-      colors: tintedColors,
-      stops: basebackground.stops,
-    );
   }
 
   Color applyWeatherTimeToclouds(Color cloudColor, int weatherCode) {
     Color overlay;
-    if ((weatherCode >= 51 && weatherCode <= 67) ||
-        (weatherCode >= 80 && weatherCode <= 99)) {
-      //Lluvias, aguanieve o tormentas
-      overlay = const Color.fromARGB(177, 133, 133, 133);
-    } else {
-      //despejado
-      return cloudColor;
+    final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    switch (weatherRange.description) {
+      case Condition.rain ||
+          Condition.rainShowers ||
+          Condition.freezingRain ||
+          Condition.drizzle ||
+          Condition.freezingDrizzle ||
+          Condition.thunderstorm:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 133, 133, 133);
+        break;
+
+      case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 133, 133, 133);
+        break;
+
+      case Condition.thunderstormWithHail:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(intensity, 133, 133, 133);
+        break;
+
+      case _:
+        return cloudColor;
     }
 
     Color tintedColor = Color.alphaBlend(cloudColor, overlay);
@@ -2661,9 +3402,16 @@ class CloudyBakcgroundPainter extends CustomPainter {
     Size size,
     Paint paint,
     double cloudCover,
+    int weatherCode,
     List<Offset> baseOffsets,
     Color baseColor,
   ) {
+    var weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+
+    if (weatherRange.intensity > cloudCover) {
+      cloudCover = (weatherRange.intensity as num).toDouble().clamp(0.0, 1.0);
+    }
+
     final int cloudCount = (cloudCover * 8).toInt();
     final Random random = Random(42);
     final double minSize = 190;
@@ -2690,10 +3438,10 @@ class CloudyBakcgroundPainter extends CustomPainter {
   }
 
   Color cloudColors(double dayProgress) {
-    const Color dawn = Color.fromARGB(15, 202, 183, 183); // Amanecer
-    const Color noon = Color.fromARGB(234, 255, 255, 255); // Mediodía
+    const Color dawn = Color.fromARGB(178, 202, 183, 183); // Amanecer
+    const Color noon = Color.fromARGB(255, 167, 166, 166); // Mediodía
     const Color sunset = Color.fromARGB(255, 255, 255, 255); // Atardecer
-    const Color night = Color.fromARGB(66, 255, 255, 255); // Noche
+    const Color night = Color.fromARGB(178, 255, 255, 255); // Noche
 
     if (dayProgress < 0.5) {
       //Amanecer / Mediodía
@@ -2713,12 +3461,32 @@ class CloudyBakcgroundPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 40);
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 30);
     // Fondo dinámico
     final Paint backgroundPaint = Paint();
     LinearGradient backgroundColor;
 
-    if (dayProgress <= 0.2) {
+    if (dayProgress == -2.0) {
+      backgroundColor = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color.fromARGB(255, 13, 110, 221), // mediodía
+          const Color.fromARGB(255, 201, 223, 252),
+        ],
+        stops: [0.0, 1.0],
+      );
+    } else if (dayProgress < 0) {
+      backgroundColor = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color.fromARGB(255, 10, 10, 30), // Negro
+          const Color.fromARGB(255, 5, 5, 15), // Más oscuro
+        ],
+        stops: [0.0, 1.0],
+      );
+    } else if (dayProgress <= 0.2) {
       backgroundColor = LinearGradient.lerp(
         LinearGradient(
           begin: Alignment.topCenter,
@@ -2885,6 +3653,7 @@ class CloudyBakcgroundPainter extends CustomPainter {
       size,
       paint,
       normalizedCloudCover,
+      weathercode,
       baseOffsets,
       cloud1Color,
     );
@@ -2973,11 +3742,15 @@ class _SunPathState extends State<SunPath> {
 }
 
 class SunPathPainter extends CustomPainter {
-  final double progress;
+  double progress;
   SunPathPainter(this.progress);
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (progress < 0.0) {
+      progress = 0.0;
+    }
+
     final paintCurve = Paint()
       ..color = Colors.orange
       ..style = PaintingStyle.stroke
@@ -3023,7 +3796,7 @@ class SunPathPainter extends CustomPainter {
   }
 }
 
-enum WeatherEffect { none, rain, snow, hail }
+enum WeatherEffect { none, rain, snow, hail, rainHail }
 
 class Particle {
   Offset position;
@@ -3048,10 +3821,14 @@ class DynamicWeather extends StatefulWidget {
 }
 
 class _DynamicWeatherState extends State<DynamicWeather>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late AnimationController _controller;
   List<Particle> _particles = [];
   late WeatherEffect effect;
+
+  late AnimationController _flashController;
+  // ignore: prefer_final_fields
+  double _lightningOpacity = 0.0;
 
   @override
   void initState() {
@@ -3064,7 +3841,35 @@ class _DynamicWeatherState extends State<DynamicWeather>
           )
           ..addListener(updatePartcles)
           ..repeat();
+
+    _flashController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+
+    startLightningAnimation();
     setState(() {});
+  }
+
+  void startLightningAnimation() async {
+    while (true) {
+      await Future.delayed(
+        Duration(milliseconds: 1500 + Random().nextInt(3000)),
+      );
+      if (_isStorm(widget.weatherCode)) {
+        setState(() => _lightningOpacity = 1.0);
+        await Future.delayed(const Duration(milliseconds: 80));
+        setState(() => _lightningOpacity = 0.0);
+        await Future.delayed(const Duration(milliseconds: 80));
+        setState(() => _lightningOpacity = 0.6);
+        await Future.delayed(const Duration(milliseconds: 50));
+        setState(() => _lightningOpacity = 0.0);
+      }
+    }
+  }
+
+  bool _isStorm(int weatherCode) {
+    return [95, 96, 99].contains(weatherCode);
   }
 
   @override
@@ -3080,17 +3885,25 @@ class _DynamicWeatherState extends State<DynamicWeather>
   }
 
   WeatherEffect determineEffect(int weatherCode) {
-    if (weatherCode >= 71 && weatherCode <= 77 ||
-        weatherCode >= 85 && weatherCode <= 86) {
-      return WeatherEffect.snow;
-    } else if (weatherCode >= 66 && weatherCode <= 67) {
-      return WeatherEffect.hail;
-    } else if ((weatherCode >= 51 && weatherCode <= 65) ||
-        (weatherCode >= 80 && weatherCode <= 82) ||
-        (weatherCode >= 95 && weatherCode <= 99)) {
-      return WeatherEffect.rain;
+    final weatherRange = WeatherCodesRanges(weatherCode: widget.weatherCode);
+    switch (weatherRange.description) {
+      case Condition.rain ||
+          Condition.rainShowers ||
+          Condition.freezingRain ||
+          Condition.drizzle ||
+          Condition.freezingDrizzle ||
+          Condition.thunderstorm:
+        return WeatherEffect.rain;
+
+      case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
+        return WeatherEffect.snow;
+
+      case Condition.thunderstormWithHail:
+        return WeatherEffect.rainHail;
+
+      case _:
+        return WeatherEffect.none;
     }
-    return WeatherEffect.none;
   }
 
   @override
@@ -3105,16 +3918,47 @@ class _DynamicWeatherState extends State<DynamicWeather>
     final screenWidth = MediaQuery.of(context).size.width;
 
     _particles = List.generate(100, (_) {
+      final weatherRange = WeatherCodesRanges(weatherCode: widget.weatherCode);
+
       double speed = switch (effect) {
-        WeatherEffect.snow => 1 + random.nextDouble() * 1.5,
-        WeatherEffect.hail => 5 + random.nextDouble() * 2,
-        WeatherEffect.rain => 3 + random.nextDouble() * 2,
+        WeatherEffect.snow =>
+          1 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  20,
+        WeatherEffect.hail =>
+          5 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  20,
+        WeatherEffect.rain =>
+          3 * (weatherRange.intensity as num).toDouble() / 20,
+
+        WeatherEffect.rainHail =>
+          5 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  20,
         _ => 0,
       };
       double size = switch (effect) {
-        WeatherEffect.snow => 2 + random.nextDouble() * 3,
-        WeatherEffect.hail => 3 + random.nextDouble() * 3,
-        WeatherEffect.rain => 1.5,
+        WeatherEffect.snow =>
+          2 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  30,
+        WeatherEffect.hail =>
+          3 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  30,
+        WeatherEffect.rain => (weatherRange.intensity as num).toDouble() / 30,
+
+        WeatherEffect.rainHail =>
+          3 +
+              random.nextDouble() *
+                  (weatherRange.intensity as num).toDouble() /
+                  30,
         _ => 0,
       };
 
@@ -3145,6 +3989,7 @@ class _DynamicWeatherState extends State<DynamicWeather>
   @override
   void dispose() {
     _controller.dispose();
+    _flashController.dispose();
     super.dispose();
   }
 
@@ -3152,20 +3997,38 @@ class _DynamicWeatherState extends State<DynamicWeather>
   Widget build(BuildContext context) {
     if (effect == WeatherEffect.none) return const SizedBox.shrink();
 
-    return CustomPaint(
-      size: Size.infinite,
-      painter: WeatherSkyPainter(_particles),
+    return Stack(
+      children: [
+        CustomPaint(
+          size: Size.infinite,
+          painter: WeatherSkyPainter(
+            _particles,
+            widget.weatherCode,
+            (_lightningOpacity * 150).toInt(),
+          ),
+        ),
+        //Relámpago
+        if (_lightningOpacity > 0)
+          Positioned.fill(
+            child: Container(
+              color: Colors.white.withAlpha((_lightningOpacity * 20).toInt()),
+            ),
+          ),
+      ],
     );
   }
 }
 
 class WeatherSkyPainter extends CustomPainter {
   final List<Particle> particles;
-  WeatherSkyPainter(this.particles);
+  final int weatherCode;
+  final int lightningOpacity;
+  WeatherSkyPainter(this.particles, this.weatherCode, this.lightningOpacity);
 
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint();
+    final Paint auxiliarPaint = Paint();
     for (var p in particles) {
       switch (p.effect) {
         case WeatherEffect.rain:
@@ -3181,12 +4044,76 @@ class WeatherSkyPainter extends CustomPainter {
           canvas.drawCircle(p.position, p.size - 2, paint);
           break;
         case WeatherEffect.hail:
-          paint.color = const Color.fromARGB(255, 158, 158, 158);
+          paint.color = const Color.fromARGB(255, 148, 152, 199);
           canvas.drawCircle(p.position, p.size - 3, paint);
+          break;
+        case WeatherEffect.rainHail:
+          auxiliarPaint.color = const Color.fromARGB(255, 253, 254, 255);
+          canvas.drawCircle(p.position * pi / 3, p.size - 3, auxiliarPaint);
+
+          paint.color = const Color.fromARGB(108, 153, 165, 180);
+          canvas.drawLine(
+            p.position,
+            p.position.translate(0, p.size * 20),
+            paint..strokeWidth = 1.5,
+          );
           break;
         case WeatherEffect.none:
           break;
       }
+    }
+    if (_isStorm(weatherCode)) {
+      _drawLightning(canvas, size);
+    }
+  }
+
+  bool _isStorm(int weatherCode) {
+    final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    return weatherRange.description == Condition.thunderstorm ||
+        weatherRange.description == Condition.thunderstormWithHail;
+  }
+
+  void _drawLightning(Canvas canvas, Size size) {
+    final Random random = Random();
+    final double startX = size.width * (0.2 + random.nextDouble() * 0.6);
+    double currentY = 0;
+    double currentX = startX;
+
+    const int segments = 30;
+    final double segmentLength = size.height / segments;
+
+    for (int i = 0; i < segments; i++) {
+      final double nextX = currentX + (random.nextDouble() * 60 - 30);
+      final double nextY = currentY + segmentLength;
+
+      final int alpha = ((1 - (i / segments)) * lightningOpacity).toInt().clamp(
+        0,
+        255,
+      );
+
+      final lightningPaint = Paint()
+        ..color = Colors.white.withAlpha(alpha)
+        ..strokeWidth = 3
+        ..style = PaintingStyle.stroke;
+
+      final p1 = Offset(currentX, currentY);
+      final p2 = Offset(nextX, nextY);
+
+      canvas.drawLine(p1, p2, lightningPaint);
+
+      if (i > 3 && i % 7 == 0 && random.nextBool()) {
+        final branchLength = segmentLength * 0.6;
+        final branchX = nextX + (random.nextBool() ? 20 : -20);
+        final branchY = nextY + branchLength;
+        canvas.drawLine(
+          p2,
+          Offset(branchX, branchY),
+          lightningPaint..strokeWidth = 1.5,
+        );
+      }
+
+      currentX = nextX;
+      currentY = nextY;
     }
   }
 
