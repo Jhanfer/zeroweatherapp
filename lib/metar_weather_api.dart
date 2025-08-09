@@ -6,6 +6,9 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
+import 'package:nominatim_flutter/model/request/reverse_request.dart';
+import 'package:nominatim_flutter/model/response/status_response.dart';
+import 'package:nominatim_flutter/nominatim_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:async';
@@ -79,7 +82,7 @@ class WeatherService with ChangeNotifier {
   var siteName = "";
   var country = "";
   var _currentPosition = {};
-  var _lastPosition = {};
+  Map<dynamic, dynamic>? _lastPosition;
 
   Map<String, dynamic>? decodeJson(String jsonString) {
     return jsonDecode(jsonString) as Map<String, dynamic>?;
@@ -125,8 +128,8 @@ class WeatherService with ChangeNotifier {
         _currentPosition["latitude"] != null &&
             _currentPosition["longitude"] != null
         ? _currentPosition
-        : (_lastPosition["latitude"] != null &&
-                  _lastPosition["longitude"] != null
+        : (_lastPosition?["latitude"] != null &&
+                  _lastPosition?["longitude"] != null
               ? _lastPosition
               : null);
 
@@ -153,6 +156,74 @@ class WeatherService with ChangeNotifier {
     } catch (e) {
       debugPrint("Error al obtener el nombre de localidad: $e");
     }
+  }
+
+  Future<Map> updateSiteNameReturn(double latitude, double longitude) async {
+    String safeSiteName = "Ubicación desconocida.";
+    String currentCountry = "";
+    debugPrint("UpdateSiteNameReturn");
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        latitude,
+        longitude,
+      );
+
+      if (placemarks.isNotEmpty) {
+        safeSiteName =
+            placemarks.first.locality ??
+            placemarks.first.subLocality ??
+            placemarks.first.street ??
+            "Ubicación desconocida.";
+        currentCountry = placemarks.first.isoCountryCode!;
+      }
+    } catch (e) {
+      debugPrint("Error al obtener el nombre de localidad: $e");
+    }
+
+    return {"siteName": safeSiteName, "country": currentCountry};
+  }
+
+  Future<Map> NewUpdateSiteName(double latitude, double longitude) async {
+    String safeSiteName = "Ubicación desconocida.";
+    String currentCountry = "";
+
+    NominatimFlutter.instance.configureNominatim(
+      useCacheInterceptor: true,
+      maxStale: const Duration(days: 7),
+    );
+    debugPrint("NewUpdateSiteName");
+
+    try {
+      final reverseRequest = ReverseRequest(
+        lat: latitude,
+        lon: longitude,
+        addressDetails: true,
+        extraTags: true,
+        nameDetails: true,
+      );
+
+      final statusResult = await NominatimFlutter.instance.status();
+      if (statusResult.status == Status.ok) {
+        final reverseResult = await NominatimFlutter.instance.reverse(
+          reverseRequest: reverseRequest,
+          language: "es-ES,es;q=0.5",
+        );
+
+        safeSiteName =
+            reverseResult.address?["neighbourhood"] ??
+            reverseResult.address?["town"] ??
+            reverseResult.address?["county"] ??
+            reverseResult.address?["province"] ??
+            "Ubicación desconocida.";
+
+        currentCountry =
+            reverseResult.address?["country"] ?? "Ubicación desconocida.";
+      }
+    } catch (e) {
+      debugPrint("Error al obtener el nombre de localidad: $e");
+    }
+
+    return {"siteName": safeSiteName, "country": currentCountry};
   }
 
   Future<void> getPrecisePosition() async {
@@ -183,10 +254,17 @@ class WeatherService with ChangeNotifier {
         var newPosition = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.best,
         );
+        final placemarks = await updateSiteNameReturn(
+          newPosition.latitude,
+          newPosition.longitude,
+        );
+
         currentPosition = {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          "siteName": placemarks["siteName"],
+          "country": placemarks["country"],
           "timezone": currentTimezone,
         };
         final success = await prefs.setString(
@@ -197,7 +275,8 @@ class WeatherService with ChangeNotifier {
       }
 
       _currentPosition = currentPosition;
-      await updateSiteName();
+      siteName = currentPosition["siteName"];
+      country = currentPosition["country"];
 
       debugPrint(
         "${_currentPosition["latitude"]}, ${_currentPosition["longitude"]}",
@@ -219,7 +298,7 @@ class WeatherService with ChangeNotifier {
     debugPrint("getPrecisePositionLocationMethod Iniciada.");
     try {
       final cachedPositionJson = prefs.getString(cacheKey);
-      if (cachedPositionJson != null) {
+      if (cachedPositionJson != null && cachedPositionJson.isNotEmpty) {
         final decodedPositionCache = jsonDecode(cachedPositionJson);
         final timeStamp = decodedPositionCache["timeStamp"] ?? 0;
         if (decodedPositionCache["timezone"] == null) {
@@ -229,6 +308,8 @@ class WeatherService with ChangeNotifier {
         if (DateTime.now().millisecondsSinceEpoch - timeStamp < 2 * 60 * 1000) {
           debugPrint("Usando posición mejorada cacheada.");
           currentPosition = decodedPositionCache;
+          siteName = decodedPositionCache["siteName"];
+          country = decodedPositionCache["country"];
         }
       } else {
         debugPrint("Caché de posición expirado, buscando nueva posición.");
@@ -239,21 +320,28 @@ class WeatherService with ChangeNotifier {
         var newPosition = await locService.getLocation().timeout(
           Duration(seconds: 30),
         );
+
+        final placemarks = await NewUpdateSiteName(
+          newPosition.latitude ?? 0.0,
+          newPosition.longitude ?? 0.0,
+        );
+
         currentPosition = {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          "siteName": placemarks["siteName"],
+          "country": placemarks["country"],
           "timezone": currentTimezone,
         };
-        final success = await prefs.setString(
-          cacheKey,
-          json.encode(currentPosition),
-        );
+        final currentPositionJson = jsonEncode(currentPosition);
+        final success = await prefs.setString(cacheKey, currentPositionJson);
         debugPrint("¿Guardado posición en caché?: $success");
       }
 
       _currentPosition = currentPosition;
-      await updateSiteName();
+      siteName = currentPosition["siteName"] ?? "Desconocido";
+      country = currentPosition["country"] ?? "Desconocido";
 
       debugPrint(
         "${_currentPosition["latitude"]}, ${_currentPosition["longitude"]}",
@@ -292,31 +380,41 @@ class WeatherService with ChangeNotifier {
           debugPrint("CachedPosition");
           freshPositionData = decodedPositionCache;
           _currentPosition = freshPositionData!;
+          siteName = decodedPositionCache["siteName"];
+          country = decodedPositionCache["country"];
         }
       } else {
         debugPrint("Caché de posición expirado, buscando nueva posición.");
       }
       try {
-        if (freshPositionData == null || hasMovedSignificantly()) {
+        if (freshPositionData == null ||
+            (_lastPosition != null && hasMovedSignificantly())) {
           newPosition = await Geolocator.getLastKnownPosition();
-          if (newPosition != null) {
-            newPosition = await Geolocator.getCurrentPosition(
-              desiredAccuracy: LocationAccuracy.low,
-              timeLimit: Duration(seconds: 30),
-            );
-          }
+          newPosition ??= await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.low,
+            timeLimit: Duration(seconds: 30),
+          );
+
+          final placemarks = await NewUpdateSiteName(
+            newPosition.latitude,
+            newPosition.longitude,
+          );
 
           freshPositionData = {
-            "latitude": newPosition?.latitude ?? 0.0,
-            "longitude": newPosition?.longitude ?? 0.0,
+            "latitude": newPosition.latitude,
+            "longitude": newPosition.longitude,
+            "siteName": placemarks["siteName"],
+            "country": placemarks["country"],
             "timeStamp": DateTime.now().millisecondsSinceEpoch,
             "timezone": currentTimezone,
           };
-          final success = await prefs.setString(
-            cacheKey,
-            json.encode(freshPositionData),
-          );
+
+          final freshPositionJson = jsonEncode(freshPositionData);
+          final success = await prefs.setString(cacheKey, freshPositionJson);
           debugPrint("¿Guardado posición en caché?: $success");
+
+          siteName = freshPositionData["siteName"] ?? "Desconocido";
+          country = freshPositionData["country"] ?? "Desconocido";
         }
       } catch (e) {
         debugPrint("Ha ocurrido un error al obtener la ubicación: $e");
@@ -330,12 +428,11 @@ class WeatherService with ChangeNotifier {
     if (freshPositionData != null) {
       _currentPosition = freshPositionData;
 
-      var lat = _currentPosition["latitude"] ?? _lastPosition["latitude"];
-      var long = _currentPosition["longitude"] ?? _lastPosition["longitude"];
+      var lat = _currentPosition["latitude"] ?? _lastPosition?["latitude"];
+      var long = _currentPosition["longitude"] ?? _lastPosition?["longitude"];
 
       debugPrint("Usando currentPosition: $lat, $long");
     }
-    await updateSiteName();
     notifyListeners();
   }
 
@@ -380,8 +477,8 @@ class WeatherService with ChangeNotifier {
     // Extraer las latitudes y longitudes de los mapas
     final double currentLat = _currentPosition["latitude"] as double;
     final double currentLon = _currentPosition["longitude"] as double;
-    final double lastLat = _lastPosition["latitude"] as double;
-    final double lastLon = _lastPosition["longitude"] as double;
+    final double lastLat = _lastPosition?["latitude"] as double;
+    final double lastLon = _lastPosition?["longitude"] as double;
 
     // Calcular la distancia en metros usando geolocator
     final double distanceInMeters = Geolocator.distanceBetween(
@@ -463,7 +560,7 @@ class WeatherService with ChangeNotifier {
 
             meteoFuture = client.get(
               Uri.parse(
-                "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code&timezone=${_lastPosition["timezone"]}",
+                "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code&timezone=${_lastPosition?["timezone"]}",
               ),
             );
 
@@ -507,8 +604,25 @@ class WeatherService with ChangeNotifier {
           DateTime? dateTime;
           double? windKmh, windDirection;
 
+          if (lines == null || lines.isEmpty) {
+            debugPrint("Las lines están vacías.");
+            return;
+          }
+
+          if (forecastCachedData == null || forecastCachedData!.isEmpty) {
+            debugPrint("Forecast data está vacío.");
+            return;
+          }
+
+          if (!forecastCachedData!.containsKey("tempByHours") ||
+              forecastCachedData!["tempByHours"] == null ||
+              forecastCachedData!["tempByHours"].isEmpty) {
+            debugPrint("Error: forecastCachedData['tempByHours'] está vacío.");
+            return;
+          }
+
           try {
-            for (var line in lines!) {
+            for (var line in lines) {
               final parts = line.trim().split(" ");
               for (var part in parts) {
                 if (part.length == 7 && part.endsWith("Z")) {
@@ -530,7 +644,7 @@ class WeatherService with ChangeNotifier {
                     var initialTemp = tempDew[0].replaceFirst("M", "-");
                     var normalizedTemp =
                         (int.parse(initialTemp) * 0.4) +
-                        (forecastCachedData!["tempByHours"][0] * 0.6);
+                        (await forecastCachedData?["tempByHours"][0] * 0.6);
 
                     temp = normalizedTemp.toString();
 
@@ -631,7 +745,7 @@ class WeatherService with ChangeNotifier {
             dataToUse = {
               "temperature": tempC,
               "dewPoint": dewPointC,
-              "humidity": humidity.roundToDouble().clamp(0, 100),
+              "humidity": humidity.roundToDouble().clamp(0.0, 100.0),
               "windSpeed": windKmh,
               "windDirection": windDirection,
               "heatIndex": heatIndex.toStringAsFixed(2),
@@ -678,12 +792,347 @@ class WeatherService with ChangeNotifier {
 
             debugPrint("¿Guardado el tiempo en caché?: $success");
           } else {
-            throw Exception("No se pudo obtener la información del clima");
+            debugPrint("No se pudo obtener la información del clima");
           }
         }
       }
       debugPrint(
         "Tiempo total METAR: ${DateTime.now().difference(startTime).inMilliseconds}ms",
+      );
+    }();
+  }
+
+  Future<void> getForecast() async {
+    final startTime = DateTime.now();
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = "meteo_forecast";
+    final forecastCached = prefs.getString(cacheKey);
+    http.Response? forecastHourlyResponse;
+    http.Response? forecastDailyResponse;
+    Map<String, dynamic>? dataToUse;
+
+    if (forecastCached != null) {
+      final data = decodeJson(forecastCached);
+      if (data!["precipitationByHoursTypes"] == null ||
+          data["precipitationByHoursTypes"] == "" ||
+          data["precipitationByHoursTypes"] == []) {
+        data["precipitationByHoursTypes"] = ["default", "default"];
+      }
+      debugPrint("Usando CachedForecastData");
+      dataToUse = data;
+      forecastCachedData = dataToUse;
+      notifyListeners();
+    }
+
+    () async {
+      final timeStamp = dataToUse?["timeStamp"] ?? 0;
+      if (dataToUse == null ||
+          hasMovedSignificantly() ||
+          DateTime.now().millisecondsSinceEpoch - timeStamp > 10 * 60 * 1000) {
+        debugPrint("Rescatando datos nuevos de FORECAST");
+        final client = http.Client();
+        try {
+          Future<http.Response> forecastHourlyFuture;
+          Future<http.Response> forecastDailyFuture;
+          forecastHourlyFuture = client.get(
+            Uri.parse(
+              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,rain,snowfall,showers,uv_index,weather_code&timezone=${_lastPosition?["timezone"]}",
+            ),
+          );
+
+          forecastDailyFuture = client.get(
+            Uri.parse(
+              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,daylight_duration&timezone=${_lastPosition?["timezone"]}",
+            ),
+          );
+
+          final results = await Future.wait([
+            forecastHourlyFuture,
+            forecastDailyFuture,
+          ]);
+          forecastHourlyResponse = results[0];
+          forecastDailyResponse = results[1];
+        } catch (e) {
+          debugPrint("Se ha presentado un error: $e");
+        } finally {
+          client.close();
+        }
+
+        if (forecastHourlyResponse!.statusCode == 200 &&
+            forecastDailyResponse!.statusCode == 200) {
+          //Hourly Data
+          final hourlyData = jsonDecode(forecastHourlyResponse!.body);
+          final hourlyTemp = hourlyData["hourly"]["temperature_2m"];
+          final List hourlyTime = hourlyData["hourly"]["time"];
+          final hourlyPrecipitationProbability =
+              hourlyData["hourly"]["precipitation_probability"];
+          final hourlyUVIndex = hourlyData["hourly"]["uv_index"];
+          //Daily Data
+          final dailyData = jsonDecode(forecastDailyResponse!.body);
+          final dailySunrise = dailyData["daily"]["sunrise"][0];
+          final dailySunset = dailyData["daily"]["sunset"][0];
+          final daylightDuration = dailyData["daily"]["daylight_duration"][0];
+
+          //final snowfall = hourlyData["hourly"]["snowfall"];
+          //final rain = hourlyData["hourly"]["rain"];
+          //final showers = hourlyData["hourly"]["showers"];
+          final hourlyWeatherCode = hourlyData["hourly"]["weather_code"];
+
+          List<int> hours = [];
+          List<String> dates = [];
+          List<double> parsedTemp = [];
+          List<double> parsedPrecipitation = [];
+          List<String> precipitationTypes = [];
+          List<double> dailyUVIndexMax = [];
+
+          Map<String, List<double>> dailyTemps = {};
+          Map<String, List<double>> dailyPrecipitation = {};
+
+          var now = DateTime.now().toLocal();
+          final limit = now.add(const Duration(hours: 24));
+          final weekLimit = now.add(const Duration(days: 7));
+
+          for (int i = 0; i < hourlyTime.length; i++) {
+            var parsed = DateTime.parse(hourlyTime[i]).toLocal();
+            if (parsed.isBefore(now) || parsed.isAfter(weekLimit)) continue;
+
+            final dateKey =
+                "${parsed.year}-${parsed.month.toString().padLeft(2, "0")}-${parsed.day.toString().padLeft(2, "0")}";
+
+            dailyTemps.putIfAbsent(dateKey, () => []);
+            dailyTemps[dateKey]!.add((hourlyTemp[i] as num).toDouble());
+
+            dailyPrecipitation.putIfAbsent(dateKey, () => []);
+            dailyPrecipitation[dateKey]!.add(
+              (hourlyPrecipitationProbability[i] as num).toDouble(),
+            );
+          }
+
+          List<double> dailyMaxTemps = [];
+          List<double> dailyMinTemps = [];
+          List<int> dailyPrecipitationTotals = [];
+          List<String> weekDays = [];
+
+          for (var entry in dailyTemps.entries) {
+            final temps = entry.value;
+            final precipitations = dailyPrecipitation[entry.key];
+            dailyMaxTemps.add(
+              temps.reduce(
+                (currentMax, element) =>
+                    element > currentMax ? element : currentMax,
+              ),
+            );
+            dailyMinTemps.add(
+              temps.reduce(
+                (currentMin, element) =>
+                    element < currentMin ? element : currentMin,
+              ),
+            );
+
+            dailyPrecipitationTotals.add(
+              (precipitations!.reduce((a, b) => a + b) / precipitations.length)
+                  .toInt(),
+            );
+
+            final date = DateTime.parse(entry.key);
+            var dayName = DateFormat.EEEE("es").format(date);
+
+            if (date.day == now.day) {
+              dayName = "Hoy";
+            }
+
+            weekDays.add(dayName[0].toUpperCase() + dayName.substring(1));
+          }
+
+          //Sunrise en DateTime para comparar
+          final sunsetDatetime = DateTime.parse(dailySunset).toLocal();
+          final sunriseDatetime = DateTime.parse(dailySunrise).toLocal();
+
+          for (int i = 0; i < hourlyTime.length; i++) {
+            var parsed = DateTime.parse(hourlyTime[i]).toLocal();
+            if (parsed.isAfter(now) &&
+                parsed.isBefore(limit) &&
+                !hours.contains(parsed.hour)) {
+              hours.add(parsed.hour);
+              dates.add(parsed.toIso8601String());
+
+              parsedTemp.add(hourlyTemp[i].toDouble());
+
+              //var maxValue = max(showers[i], max(snowfall[i], rain[i]));
+              final bool isLikeRaining =
+                  hourlyPrecipitationProbability[i] >= 10;
+
+              final DateTime sunset = DateTime(
+                parsed.day == now.day
+                    ? now.year
+                    : now.year + (parsed.year > now.year ? 1 : 0),
+                parsed.day == now.day
+                    ? now.month
+                    : now.month + (parsed.month > now.month ? 1 : 0),
+                parsed.day == now.day ? now.day : now.day + 1,
+                sunsetDatetime.hour,
+                sunsetDatetime.minute,
+                sunsetDatetime.second,
+              );
+
+              final DateTime sunrise = DateTime(
+                parsed.day == now.day
+                    ? now.year
+                    : now.year + (parsed.year > now.year ? 1 : 0),
+                parsed.day == now.day
+                    ? now.month
+                    : now.month + (parsed.month > now.month ? 1 : 0),
+                parsed.day == now.day ? now.day : now.day + 1,
+                sunriseDatetime.hour,
+                sunriseDatetime.minute,
+                sunriseDatetime.second,
+              );
+
+              final bool isNight =
+                  (parsed.isAfter(sunset) &&
+                      parsed.isBefore(sunrise.add(Duration(days: 1)))) ||
+                  (parsed.isAfter(sunset.subtract(Duration(days: 1))) &&
+                      parsed.isBefore(sunrise));
+
+              String precipitationType;
+              final weatherRange = WeatherCodesRanges(
+                weatherCode: hourlyWeatherCode[i],
+              );
+
+              switch (weatherRange.description) {
+                case Condition.cloudy:
+                  if (isLikeRaining) {
+                    precipitationType = isNight
+                        ? '\uF02B' // night_alt_sprinkle (llovizna nocturna)
+                        : '\uF008'; // day_sprinkle (llovizna diurna)
+                  } else {
+                    precipitationType = isNight
+                        ? '\uF086' // night_cloudy (o night_alt_cloudy \uF02E)
+                        : '\uf002'; // day_cloudy
+                  }
+                  break;
+
+                case Condition.clear:
+                  precipitationType = isNight
+                      ? '\uF02E' // night_clear
+                      : '\uF00D'; // day_sunny
+                  break;
+
+                case Condition.rain:
+                  precipitationType = isNight
+                      ? '\uF036' // night_rain
+                      : '\uF008'; // day_rain
+                  break;
+
+                case Condition.rainShowers:
+                  precipitationType = isNight
+                      ? '\uF037' // night_showers
+                      : '\uF00B'; // day_showers
+                  break;
+
+                case Condition.freezingRain:
+                  precipitationType = isNight
+                      ? '\uF025' // night_alt_rain_mix (lluvia helada nocturna)
+                      : '\uF006'; // day_rain_mix (lluvia helada diurna)
+                  break;
+
+                case Condition.drizzle:
+                  precipitationType = isNight
+                      ? '\uF02B' // night_alt_sprinkle
+                      : '\uF008'; // day_sprinkle
+                  break;
+
+                case Condition.freezingDrizzle:
+                  precipitationType = isNight
+                      ? '\uF0B5' // night_alt_sleet (o sleet \uF0B5)
+                      : '\uF0B6'; // day_sleet (o sleet \uF0B5)
+                  break;
+
+                case Condition.thunderstorm:
+                  precipitationType = isNight
+                      ? '\uF03C' // night_thunderstorm
+                      : '\uF010'; // day_thunderstorm
+                  break;
+
+                case Condition.snowFall:
+                case Condition.snowGrains:
+                case Condition.snowShowers:
+                  precipitationType = isNight
+                      ? '\uF038' // night_snow
+                      : '\uF00C'; // day_snow
+                  break;
+
+                case Condition.thunderstormWithHail:
+                  precipitationType = isNight
+                      ? '\uF03C' // night_thunderstorm (no hay ícono específico con granizo)
+                      : '\uF010'; // day_thunderstorm (no hay ícono específico con granizo)
+                  break;
+
+                //Añadir condicion para hail
+                // \uF004 o \uF064 'hail'.
+                // case Condition.hail:
+                //   precipitationType = '\uF064'; // hail icon
+                //   break;
+
+                default:
+                  precipitationType = isNight
+                      ? '\uF02E' // night_clear
+                      : '\uF00D'; // day_sunny
+                  break;
+              }
+
+              precipitationTypes.add(precipitationType);
+
+              parsedPrecipitation.add(
+                hourlyPrecipitationProbability[i].toDouble(),
+              );
+              if (parsed.hour == now.hour) {
+                dailyUVIndexMax.add(hourlyUVIndex[i].toDouble());
+              }
+            }
+          }
+
+          var maxTemp = parsedTemp.reduce(
+            (currentMax, element) =>
+                element > currentMax ? element : currentMax,
+          );
+          var minTemp = parsedTemp.reduce(
+            (currentMin, element) =>
+                element < currentMin ? element : currentMin,
+          );
+
+          dataToUse = {
+            "tempHours": hours,
+            "precipitationByHours": parsedPrecipitation,
+            "precipitationByHoursTypes": precipitationTypes,
+            "tempByHours": parsedTemp,
+            "maxTemp": maxTemp,
+            "minTemp": minTemp,
+            "dates": dates,
+            "dailySunrise": dailySunrise,
+            "dailySunset": dailySunset,
+            "dailySunshineDuration": "unused",
+            "dailyDaylightDuration": daylightDuration,
+            "dailyUVIndexMax": dailyUVIndexMax,
+            "daysMaxTemps": dailyMaxTemps,
+            "daysMinTemps": dailyMinTemps,
+            "daysPrecipitationTotals": dailyPrecipitationTotals,
+            "weekDays": weekDays,
+            "timeStamp": DateTime.now().millisecondsSinceEpoch,
+          };
+        }
+        //Guardar caché
+        final success = await prefs.setString(cacheKey, json.encode(dataToUse));
+        debugPrint("¿Guardado forecast en caché?: $success");
+
+        if (forecastCachedData == null ||
+            forecastCachedData!["timeStamp"] != dataToUse?["timeStamp"]) {
+          forecastCachedData = dataToUse;
+          notifyListeners();
+        }
+      }
+      debugPrint(
+        "Tiempo total FORECAST: ${DateTime.now().difference(startTime).inMilliseconds}ms",
       );
     }();
   }
@@ -837,246 +1286,6 @@ class WeatherService with ChangeNotifier {
       }
     }
     return dataToUse ?? {};
-  }
-
-  Future<void> getForecast() async {
-    final startTime = DateTime.now();
-    final prefs = await SharedPreferences.getInstance();
-    final cacheKey = "meteo_forecast";
-    final forecastCached = prefs.getString(cacheKey);
-    http.Response? forecastHourlyResponse;
-    http.Response? forecastDailyResponse;
-    Map<String, dynamic>? dataToUse;
-
-    if (forecastCached != null) {
-      final data = decodeJson(forecastCached);
-      if (data!["precipitationByHoursTypes"] == null ||
-          data["precipitationByHoursTypes"] == "" ||
-          data["precipitationByHoursTypes"] == []) {
-        data["precipitationByHoursTypes"] = ["default", "default"];
-      }
-      debugPrint("Usando CachedForecastData");
-      dataToUse = data;
-      forecastCachedData = dataToUse;
-      notifyListeners();
-    }
-
-    () async {
-      final timeStamp = dataToUse?["timeStamp"] ?? 0;
-      if (dataToUse == null ||
-          hasMovedSignificantly() ||
-          DateTime.now().millisecondsSinceEpoch - timeStamp > 10 * 60 * 1000) {
-        debugPrint("Rescatando datos nuevos de FORECAST");
-        final client = http.Client();
-        try {
-          Future<http.Response> forecastHourlyFuture;
-          Future<http.Response> forecastDailyFuture;
-          forecastHourlyFuture = client.get(
-            Uri.parse(
-              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,rain,snowfall,showers,uv_index,weather_code&timezone=${_lastPosition["timezone"]}",
-            ),
-          );
-
-          forecastDailyFuture = client.get(
-            Uri.parse(
-              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,daylight_duration&timezone=${_lastPosition["timezone"]}",
-            ),
-          );
-
-          final results = await Future.wait([
-            forecastHourlyFuture,
-            forecastDailyFuture,
-          ]);
-          forecastHourlyResponse = results[0];
-          forecastDailyResponse = results[1];
-        } catch (e) {
-          debugPrint("Se ha presentado un error: $e");
-        } finally {
-          client.close();
-        }
-
-        if (forecastHourlyResponse!.statusCode == 200 &&
-            forecastDailyResponse!.statusCode == 200) {
-          final hourlyData = jsonDecode(forecastHourlyResponse!.body);
-          final hourlyTemp = hourlyData["hourly"]["temperature_2m"];
-          final hourlyTime = hourlyData["hourly"]["time"];
-          final hourlyPrecipitationProbability =
-              hourlyData["hourly"]["precipitation_probability"];
-          final hourlyUVIndex = hourlyData["hourly"]["uv_index"];
-
-          //final snowfall = hourlyData["hourly"]["snowfall"];
-          //final rain = hourlyData["hourly"]["rain"];
-          //final showers = hourlyData["hourly"]["showers"];
-          final hourlyWeatherCode = hourlyData["hourly"]["weather_code"];
-
-          List<int> hours = [];
-          List<String> dates = [];
-          List<double> parsedTemp = [];
-          List<double> parsedPrecipitation = [];
-          List<String> precipitationTypes = [];
-          List<double> dailyUVIndexMax = [];
-
-          Map<String, List<double>> dailyTemps = {};
-          Map<String, List<double>> dailyPrecipitation = {};
-
-          var now = DateTime.now().toLocal();
-          final limit = now.add(const Duration(hours: 24));
-          final weekLimit = now.add(const Duration(days: 7));
-
-          for (int i = 0; i < hourlyTime.length; i++) {
-            var parsed = DateTime.parse(hourlyTime[i]).toLocal();
-            if (parsed.isBefore(now) || parsed.isAfter(weekLimit)) continue;
-
-            final dateKey =
-                "${parsed.year}-${parsed.month.toString().padLeft(2, "0")}-${parsed.day.toString().padLeft(2, "0")}";
-
-            dailyTemps.putIfAbsent(dateKey, () => []);
-            dailyTemps[dateKey]!.add((hourlyTemp[i] as num).toDouble());
-
-            dailyPrecipitation.putIfAbsent(dateKey, () => []);
-            dailyPrecipitation[dateKey]!.add(
-              (hourlyPrecipitationProbability[i] as num).toDouble(),
-            );
-          }
-
-          List<double> dailyMaxTemps = [];
-          List<double> dailyMinTemps = [];
-          List<int> dailyPrecipitationTotals = [];
-          List<String> weekDays = [];
-
-          for (var entry in dailyTemps.entries) {
-            final temps = entry.value;
-            final precipitations = dailyPrecipitation[entry.key];
-            dailyMaxTemps.add(
-              temps.reduce(
-                (currentMax, element) =>
-                    element > currentMax ? element : currentMax,
-              ),
-            );
-            dailyMinTemps.add(
-              temps.reduce(
-                (currentMin, element) =>
-                    element < currentMin ? element : currentMin,
-              ),
-            );
-
-            dailyPrecipitationTotals.add(
-              (precipitations!.reduce((a, b) => a + b) / precipitations.length)
-                  .toInt(),
-            );
-
-            final date = DateTime.parse(entry.key);
-            var dayName = DateFormat.EEEE("es").format(date);
-
-            if (date.day == now.day) {
-              dayName = "Hoy";
-            }
-
-            weekDays.add(dayName[0].toUpperCase() + dayName.substring(1));
-          }
-
-          for (int i = 0; i < hourlyTime.length; i++) {
-            var parsed = DateTime.parse(hourlyTime[i]).toLocal();
-            if (parsed.isAfter(now) &&
-                parsed.isBefore(limit) &&
-                !hours.contains(parsed.hour)) {
-              hours.add(parsed.hour);
-              dates.add(parsed.toIso8601String());
-
-              parsedTemp.add(hourlyTemp[i].toDouble());
-
-              //var maxValue = max(showers[i], max(snowfall[i], rain[i]));
-              final isLikeRainin = hourlyPrecipitationProbability[i] >= 0;
-              String precipitationType;
-              final weatherRange = WeatherCodesRanges(
-                weatherCode: hourlyWeatherCode[i],
-              );
-              switch (weatherRange.description) {
-                case Condition.cloudy:
-                  precipitationType = isLikeRainin ? "🌧️" : "☁️";
-                case Condition.clear:
-                  precipitationType = isLikeRainin ? "🌤️" : "☀️";
-                case Condition.rain:
-                  precipitationType = "🌧️";
-                case Condition.rainShowers:
-                  precipitationType = "☔";
-                case Condition.freezingRain:
-                  precipitationType = "🧊";
-                case Condition.drizzle:
-                  precipitationType = "💧";
-                case Condition.freezingDrizzle:
-                  precipitationType = "🌨️";
-                case Condition.thunderstorm:
-                  precipitationType = "⛈️";
-                case Condition.snowFall:
-                case Condition.snowGrains:
-                case Condition.snowShowers:
-                  precipitationType = "❄️";
-                case Condition.thunderstormWithHail:
-                  precipitationType = "🧊";
-
-                case _:
-                  precipitationType = "☀️";
-              }
-
-              precipitationTypes.add(precipitationType);
-
-              parsedPrecipitation.add(
-                hourlyPrecipitationProbability[i].toDouble(),
-              );
-              if (parsed.hour == now.hour) {
-                dailyUVIndexMax.add(hourlyUVIndex[i].toDouble());
-              }
-            }
-          }
-
-          final dailyData = jsonDecode(forecastDailyResponse!.body);
-          final dailySunrise = dailyData["daily"]["sunrise"][0];
-          final dailySunset = dailyData["daily"]["sunset"][0];
-          final daylightDuration = dailyData["daily"]["daylight_duration"][0];
-          var maxTemp = parsedTemp.reduce(
-            (currentMax, element) =>
-                element > currentMax ? element : currentMax,
-          );
-          var minTemp = parsedTemp.reduce(
-            (currentMin, element) =>
-                element < currentMin ? element : currentMin,
-          );
-
-          dataToUse = {
-            "tempHours": hours,
-            "precipitationByHours": parsedPrecipitation,
-            "precipitationByHoursTypes": precipitationTypes,
-            "tempByHours": parsedTemp,
-            "maxTemp": maxTemp,
-            "minTemp": minTemp,
-            "dates": dates,
-            "dailySunrise": dailySunrise,
-            "dailySunset": dailySunset,
-            "dailySunshineDuration": "unused",
-            "dailyDaylightDuration": daylightDuration,
-            "dailyUVIndexMax": dailyUVIndexMax,
-            "daysMaxTemps": dailyMaxTemps,
-            "daysMinTemps": dailyMinTemps,
-            "daysPrecipitationTotals": dailyPrecipitationTotals,
-            "weekDays": weekDays,
-            "timeStamp": DateTime.now().millisecondsSinceEpoch,
-          };
-        }
-        //Guardar caché
-        final success = await prefs.setString(cacheKey, json.encode(dataToUse));
-        debugPrint("¿Guardado forecast en caché?: $success");
-
-        if (forecastCachedData == null ||
-            forecastCachedData!["timeStamp"] != dataToUse?["timeStamp"]) {
-          forecastCachedData = dataToUse;
-          notifyListeners();
-        }
-      }
-      debugPrint(
-        "Tiempo total FORECAST: ${DateTime.now().difference(startTime).inMilliseconds}ms",
-      );
-    }();
   }
 
   int? calcularICA(double concentracion, List breakpoints) {

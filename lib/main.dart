@@ -17,6 +17,7 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 import 'package:weather_icons/weather_icons.dart';
 import 'package:workmanager/workmanager.dart';
 import 'update_handler.dart';
@@ -288,25 +289,24 @@ class Checkers with ChangeNotifier {
 
 enum DayPhase { nightBefore, dawn, morning, noon, afternoon, sunset, night }
 
-DayPhase getDayPhase(double progress) {
-  if (progress < 0) {
-    return DayPhase.nightBefore;
-  } else if (progress <= 0.2) {
+DayPhase getDayPhase(double progress, int totalDuration) {
+  final dawnDurationMinutes = 30;
+  final dawnProgress = dawnDurationMinutes / totalDuration;
+  final sunsetDurationMinutes = 30;
+  final sunsetProgress = 1.0 + (sunsetDurationMinutes / totalDuration);
+  if (progress <= -0.0417 || progress > sunsetProgress) {
+    return DayPhase.night;
+  } else if (progress <= dawnProgress) {
     return DayPhase.dawn;
-  }
-  if (progress <= 0.5) {
+  } else if (progress <= 0.4167) {
     return DayPhase.morning;
-  }
-  if (progress < 0.625) {
+  } else if (progress <= 0.6667) {
     return DayPhase.noon;
-  }
-  if (progress < 0.75) {
+  } else if (progress <= 1.0) {
     return DayPhase.afternoon;
-  }
-  if (progress < 0.875) {
+  } else {
     return DayPhase.sunset;
   }
-  return DayPhase.night;
 }
 
 class LightState {
@@ -314,12 +314,14 @@ class LightState {
   final DateTime sunset;
   final double dayProgress;
   final Map<String, dynamic>? cachedLightStates;
+  final double totalDuration;
 
   LightState({
     required this.sunrise,
     required this.sunset,
     required this.dayProgress,
     this.cachedLightStates,
+    required this.totalDuration,
   });
 }
 
@@ -332,9 +334,13 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   double _dayProgress = -2.0;
-  Color _mainColor = const Color.fromARGB(255, 10, 91, 119);
-  Color _titleTextColor = const Color.fromARGB(255, 244, 240, 88);
-  Color _secondaryColor = const Color.fromARGB(255, 2, 1, 34);
+  Color backgroundColor = Colors.black;
+  Color _mainColor = Colors.white;
+  Color _complementaryMainColor = Colors.white;
+  Color _titleTextColor = Colors.white;
+  Color _secondaryColor = Colors.white;
+  int? totalDuration;
+
   String _testing = "";
   Timer? _timer;
 
@@ -358,6 +364,8 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _initAsyncStuff() async {
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 2);
     final checkers = context.read<Checkers>();
     final newWeatherService = context.read<WeatherService>();
 
@@ -391,8 +399,32 @@ class _MyHomePageState extends State<MyHomePage> {
         newWeatherService.loadStation(),
       ]);
       await newWeatherService.findNerbyStation();
+
+      bool forecastSuccess = false;
+      for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          await newWeatherService.getForecast();
+          if (newWeatherService.forecastCachedData != null &&
+              newWeatherService.forecastCachedData!.containsKey(
+                "tempByHours",
+              ) &&
+              newWeatherService.forecastCachedData!["tempByHours"].isNotEmpty) {
+            forecastSuccess = true;
+            break;
+          } else {
+            if (attempt < maxRetries) {
+              debugPrint("Reintentando en ${retryDelay.inSeconds} segundos...");
+              await Future.delayed(retryDelay);
+            }
+          }
+        } catch (e) {
+          debugPrint("Error en getForecast en intento $attempt: $e");
+          if (attempt < maxRetries) {
+            await Future.delayed(retryDelay);
+          }
+        }
+      }
       await Future.wait([
-        newWeatherService.getForecast(),
         newWeatherService.fetchMetarData(),
         newWeatherService.getICA(),
       ]);
@@ -515,9 +547,30 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  Color applyWeatherTimeToTexts(Color textColor, int weatherCode) {
+  Color applyWeatherTimeToTexts(
+    Color textColor,
+    int weatherCode,
+    double cloudCover,
+  ) {
     Color overlay;
     final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    double blendFactor = (weatherRange.intensity / 100.0).clamp(0.05, 0.25);
+    debugPrint("Cloudcover : $cloudCover");
+    final factor = (cloudCover / 150.0).clamp(0.0, 1.0);
+    Color complementary = Color.fromARGB(
+      (textColor.a).toInt(),
+      255 - (const Color.fromARGB(255, 255, 0, 0).r).toInt(),
+      255 - (const Color.fromARGB(255, 0, 255, 0).g).toInt(),
+      255 - (const Color.fromARGB(255, 0, 0, 255).b).toInt(),
+    );
+    Color normalizedColor = Color.lerp(
+      textColor,
+      complementary,
+      (factor - 0.5).clamp(0.0, 1.0),
+    )!;
+
+    debugPrint("El weather state es ${weatherRange.description}");
+
     switch (weatherRange.description) {
       case Condition.rain ||
           Condition.rainShowers ||
@@ -526,22 +579,30 @@ class _MyHomePageState extends State<MyHomePage> {
           Condition.freezingDrizzle ||
           Condition.thunderstorm:
         final intensity = weatherRange.intensity;
-        overlay = Color.fromARGB(intensity, 200, 180, 168);
+        overlay = Color.fromARGB(intensity.clamp(60, 120), 200, 150, 168);
 
       case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
         final intensity = weatherRange.intensity;
-        overlay = Color.fromARGB(intensity, 200, 180, 168);
+        overlay = Color.fromARGB(intensity.clamp(60, 120), 200, 150, 168);
 
       case Condition.thunderstormWithHail:
         final intensity = weatherRange.intensity;
-        overlay = Color.fromARGB(intensity, 200, 180, 168);
+        overlay = Color.fromARGB(intensity.clamp(60, 120), 200, 150, 168);
 
-      case _:
+      case Condition.cloudy || Condition.fog:
+        final intensity = weatherRange.intensity;
+        overlay = Color.fromARGB(
+          ((intensity * cloudCover).toInt()).clamp(0, 255),
+          200,
+          150,
+          168,
+        );
+      case Condition.clear || Condition.unknown:
         return textColor;
     }
-    final blendColor = Color.lerp(textColor, overlay, 0.5);
+    final blendColor = Color.lerp(normalizedColor, overlay, blendFactor);
     final tintedColor = Color.fromARGB(
-      ((textColor.a * 255.0).round() & 0xff),
+      ((normalizedColor.a * 255.0).round() & 0xff),
       ((blendColor!.r * 255.0).round() & 0xff),
       ((blendColor.g * 255.0).round() & 0xff),
       ((blendColor.b * 255.0).round() & 0xff),
@@ -604,14 +665,25 @@ class _MyHomePageState extends State<MyHomePage> {
 
         dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
 
-        final preSunrise = sunrise.subtract(const Duration(minutes: 30));
+        final preSunrise = sunrise
+            .subtract(const Duration(minutes: 30))
+            .toLocal();
         if (now.isBefore(preSunrise)) {
-          dayProgress = -0.5;
+          dayProgress = -0.0417;
         } else if (now.isBefore(sunrise)) {
           final totalTransition = sunrise.difference(preSunrise).inSeconds;
           final passed = now.difference(preSunrise).inSeconds;
+          dayProgress =
+              -0.0417 + (passed / totalTransition) * (0.0 - (-0.0417));
         } else if (now.isAfter(sunset)) {
-          dayProgress = 1.0;
+          final postSunset = sunset.add(const Duration(minutes: 60));
+          if (now.isBefore(postSunset)) {
+            final totalSunset = postSunset.difference(sunset).inSeconds;
+            final passedSunset = now.difference(sunset).inSeconds;
+            dayProgress = 1.0 + (passedSunset / totalSunset) * (1.0696 - 1.0);
+          } else {
+            dayProgress = 1.0696;
+          }
         }
 
         return LightState(
@@ -619,6 +691,7 @@ class _MyHomePageState extends State<MyHomePage> {
           sunset: sunset,
           dayProgress: dayProgress,
           cachedLightStates: cachedLightStates,
+          totalDuration: (totalDuration as num).toDouble(),
         );
       }
     }
@@ -632,19 +705,27 @@ class _MyHomePageState extends State<MyHomePage> {
 
         final daylightDurationSeconds = forecastData["dailyDaylightDuration"];
         final totalDuration = (daylightDurationSeconds / 60).round();
-        final currentDuration = now.difference(sunrise).inMinutes;
+        final currentDuration = now.toLocal().difference(sunrise).inMinutes;
 
         dayProgress = totalDuration > 0 ? currentDuration / totalDuration : 0.0;
 
         final preSunrise = sunrise.subtract(const Duration(minutes: 30));
-
         if (now.isBefore(preSunrise)) {
-          dayProgress = -0.5;
+          dayProgress = -0.0417;
         } else if (now.isBefore(sunrise)) {
           final totalTransition = sunrise.difference(preSunrise).inSeconds;
           final passed = now.difference(preSunrise).inSeconds;
+          dayProgress =
+              -0.0417 + (passed / totalTransition) * (0.0 - (-0.0417));
         } else if (now.isAfter(sunset)) {
-          dayProgress = 1.0;
+          final postSunset = sunset.add(const Duration(minutes: 60));
+          if (now.isBefore(postSunset)) {
+            final totalSunset = postSunset.difference(sunset).inSeconds;
+            final passedSunset = now.difference(sunset).inSeconds;
+            dayProgress = 1.0 + (passedSunset / totalSunset) * (1.0696 - 1.0);
+          } else {
+            dayProgress = 1.0696;
+          }
         }
 
         // Guardar en caché datos reales
@@ -666,6 +747,7 @@ class _MyHomePageState extends State<MyHomePage> {
           sunset: sunset,
           dayProgress: dayProgress,
           cachedLightStates: cachedLightStates,
+          totalDuration: (totalDuration as num).toDouble(),
         );
       } catch (e) {
         debugPrint("Error parseando datos reales: $e");
@@ -682,12 +764,20 @@ class _MyHomePageState extends State<MyHomePage> {
     final preSunrise = sunrise.subtract(const Duration(minutes: 30));
 
     if (now.isBefore(preSunrise)) {
-      dayProgress = -0.5;
+      dayProgress = -0.0417;
     } else if (now.isBefore(sunrise)) {
-      final totalTransition = sunrise.difference(preSunrise).inSeconds; // 1800s
+      final totalTransition = sunrise.difference(preSunrise).inSeconds;
       final passed = now.difference(preSunrise).inSeconds;
+      dayProgress = -0.0417 + (passed / totalTransition) * (0.0 - (-0.0417));
     } else if (now.isAfter(sunset)) {
-      dayProgress = 1.0;
+      final postSunset = sunset.add(const Duration(minutes: 60));
+      if (now.isBefore(postSunset)) {
+        final totalSunset = postSunset.difference(sunset).inSeconds;
+        final passedSunset = now.difference(sunset).inSeconds;
+        dayProgress = 1.0 + (passedSunset / totalSunset) * (1.0696 - 1.0);
+      } else {
+        dayProgress = 1.0696;
+      }
     }
 
     debugPrint("Usando colores por defecto.");
@@ -697,6 +787,7 @@ class _MyHomePageState extends State<MyHomePage> {
       sunset: sunset,
       dayProgress: dayProgress,
       cachedLightStates: cachedLightStates,
+      totalDuration: totalDuration.toDouble(),
     );
   }
 
@@ -714,11 +805,14 @@ class _MyHomePageState extends State<MyHomePage> {
     var sunrise = DateTime.now().toLocal();
     var sunset = DateTime.now().add(const Duration(hours: 12)).toLocal();
     int? daylightDurationMin;
-    final now = DateTime.now();
-    //final now = DateTime.parse("2025-07-24 06:56:00");
+    DateTime now = DateTime.now().toLocal();
+    //now = DateTime.parse(
+    //"${now.year.toString()}-${now.month.toString().padLeft(2, "0")}-${now.day.toString().padLeft(2, "0")} 21:50:00",
+    //).toLocal();
     int weatherCode = 0;
     double testProgress = 0.9;
     int? cachedTimeStamp;
+    double currentTotalDuration;
 
     const int hoursMillisecondsLimit = 33 * 60 * 60 * 1000;
 
@@ -739,8 +833,11 @@ class _MyHomePageState extends State<MyHomePage> {
     sunrise = lightState.sunrise;
     sunset = lightState.sunset;
     dayProgress = lightState.dayProgress;
+    currentTotalDuration = lightState.totalDuration;
+    totalDuration = currentTotalDuration.toInt();
 
     debugPrint("El sunrise actual es $sunrise");
+    debugPrint("El sunset actual es $sunset");
     debugPrint("El WeatherCode es $weatherCode");
 
     if ((dayProgress - _dayProgress).abs() > 0.01) {
@@ -748,170 +845,195 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     debugPrint("Progreso del día: $dayProgress");
-
     // Interpolación de colores para mainColor
-    final dayPhase = getDayPhase(_dayProgress);
+    final dayPhase = getDayPhase(_dayProgress, currentTotalDuration.toInt());
+    double t;
     switch (dayPhase) {
-      case DayPhase.nightBefore:
-        _mainColor = const Color.fromARGB(255, 231, 231, 250);
-        _titleTextColor = const Color.fromARGB(255, 226, 226, 255);
-        _secondaryColor = const Color.fromARGB(115, 120, 120, 180);
-        break;
-
       case DayPhase.dawn:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 204, 183, 192),
-              const Color.fromARGB(255, 173, 203, 243),
-              _dayProgress * 5,
-            ) ??
-            const Color.fromARGB(255, 52, 85, 85);
+        debugPrint("$dayPhase");
 
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(255, 255, 168, 255),
-              const Color.fromARGB(255, 255, 226, 108),
-              _dayProgress * 4,
-            ) ??
-            const Color.fromARGB(255, 255, 215, 0);
+        t = Curves.easeInOut.transform((dayProgress / 0.125).clamp(0.0, 1.0));
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 134, 106, 191)),
+          HSVColor.fromColor(const Color.fromARGB(255, 124, 207, 255)),
+          t,
+        )!.toColor();
 
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 208, 142, 223),
-              const Color.fromARGB(115, 10, 10, 70),
-              _dayProgress * 4,
-            ) ??
-            const Color.fromARGB(115, 25, 25, 112);
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 166, 182, 253)),
+          HSVColor.fromColor(const Color.fromARGB(255, 110, 190, 255)),
+          t,
+        )!.toColor();
+
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 241, 147)),
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 226, 108)),
+          t,
+        )!.toColor();
+
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 208, 142, 223)),
+          HSVColor.fromColor(const Color.fromARGB(115, 12, 23, 124)),
+          t,
+        )!.toColor();
         break;
 
       case DayPhase.morning:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 39, 95, 163),
-              const Color.fromARGB(255, 21, 97, 122),
-              (_dayProgress - 0.2) * 4,
-            ) ??
-            const Color.fromARGB(255, 0, 128, 128);
+        debugPrint("$dayPhase");
 
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(255, 255, 226, 108),
-              const Color.fromARGB(255, 255, 240, 35),
-              (_dayProgress - 0.25) * 4,
-            ) ??
-            const Color.fromARGB(255, 255, 215, 0);
+        t = Curves.easeInOut.transform(
+          ((dayProgress - 0.125) / 0.125).clamp(0.0, 1.0),
+        );
 
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 12, 23, 124),
-              const Color.fromARGB(115, 5, 125, 223),
-              (_dayProgress - 0.25) * 4,
-            ) ??
-            const Color.fromARGB(115, 25, 25, 112);
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          t,
+        )!.toColor();
+
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 0, 62, 143)),
+          t,
+        )!.toColor();
+
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 226, 108)),
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 240, 35)),
+          t,
+        )!.toColor();
+
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 12, 23, 124)),
+          HSVColor.fromColor(const Color.fromARGB(115, 5, 125, 223)),
+          t,
+        )!.toColor();
+
         break;
 
       case DayPhase.noon:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 37, 106, 131),
-              const Color.fromARGB(255, 12, 53, 124),
-              (_dayProgress - 0.5) * 5,
-            ) ??
-            const Color.fromARGB(255, 0, 128, 128);
+        debugPrint("$dayPhase");
 
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(207, 255, 217, 0),
-              const Color.fromARGB(255, 252, 219, 37),
-              (_dayProgress - 0.5) * 8,
-            ) ??
-            const Color.fromARGB(255, 0, 128, 128);
+        t = Curves.easeInOut.transform(
+          (((dayProgress - 0.25) / 0.15).clamp(0.0, 1.0)),
+        );
 
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 12, 23, 124),
-              const Color.fromARGB(115, 25, 162, 216),
-              (_dayProgress - 0.5) * 8,
-            ) ??
-            const Color.fromARGB(255, 0, 128, 128);
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          t,
+        )!.toColor();
+
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          t,
+        )!.toColor();
+
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(207, 255, 217, 0)),
+          HSVColor.fromColor(const Color.fromARGB(255, 252, 219, 37)),
+          t,
+        )!.toColor();
+
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 12, 23, 124)),
+          HSVColor.fromColor(const Color.fromARGB(115, 0, 106, 148)),
+          t,
+        )!.toColor();
+
         break;
 
       case DayPhase.afternoon:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 23, 91, 209),
-              const Color.fromARGB(255, 250, 96, 68),
-              (_dayProgress - 0.625) * 4,
-            ) ??
-            const Color.fromARGB(255, 0, 128, 128);
+        debugPrint("$dayPhase");
 
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(255, 216, 189, 34),
-              const Color.fromARGB(255, 250, 239, 140),
-              (_dayProgress - 0.5) * 4,
-            ) ??
-            const Color.fromARGB(255, 255, 215, 0);
+        t = Curves.easeInOut.transform(
+          ((dayProgress - 0.7) / 0.125).clamp(0.0, 1.0),
+        );
 
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 25, 25, 112),
-              const Color.fromARGB(115, 97, 179, 211),
-              (_dayProgress - 0.5) * 4,
-            ) ??
-            const Color.fromARGB(115, 25, 25, 112);
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 2, 90, 206)),
+          t,
+        )!.toColor();
+
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 1, 68, 155)),
+          HSVColor.fromColor(const Color.fromARGB(255, 4, 84, 189)),
+          t,
+        )!.toColor();
+
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 216, 189, 34)),
+          HSVColor.fromColor(const Color.fromARGB(255, 221, 209, 134)),
+          t,
+        )!.toColor();
+
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 52, 52, 170)),
+          HSVColor.fromColor(const Color.fromARGB(115, 52, 52, 170)),
+          t,
+        )!.toColor();
+
         break;
 
       case DayPhase.sunset:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 245, 128, 45),
-              const Color.fromARGB(255, 203, 203, 250),
-              (_dayProgress - 0.75) * 8,
-            ) ??
-            const Color.fromARGB(255, 100, 100, 160);
+        debugPrint("$dayPhase");
 
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(255, 253, 165, 149),
-              const Color.fromARGB(255, 200, 200, 255),
-              (_dayProgress - 0.75) * 8,
-            ) ??
-            const Color.fromARGB(255, 100, 100, 160);
+        t = Curves.easeInOut.transform(
+          ((dayProgress - 1.0) / (1.1667 - 1.0)).clamp(0.0, 1.0),
+        );
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(117, 111, 0, 255)),
+          HSVColor.fromColor(const Color.fromARGB(255, 221, 221, 221)),
+          t,
+        )!.toColor();
 
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 139, 150, 136),
-              const Color.fromARGB(115, 199, 199, 172),
-              (_dayProgress - 0.75) * 8,
-            ) ??
-            const Color.fromARGB(115, 100, 100, 160);
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(153, 105, 41, 255)),
+          HSVColor.fromColor(const Color.fromARGB(255, 221, 221, 221)),
+          t,
+        )!.toColor();
+
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 188, 176)),
+          HSVColor.fromColor(const Color.fromARGB(255, 255, 255, 255)),
+          t,
+        )!.toColor();
+
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 85, 59, 53)),
+          HSVColor.fromColor(const Color.fromARGB(115, 201, 201, 180)),
+          t,
+        )!.toColor();
+
         break;
 
-      case DayPhase.night:
-        _mainColor =
-            Color.lerp(
-              const Color.fromARGB(255, 255, 238, 227),
-              const Color.fromARGB(255, 231, 231, 250),
-              (_dayProgress - 0.875) * 4,
-            ) ??
-            const Color.fromARGB(255, 100, 100, 160);
-
-        _titleTextColor =
-            Color.lerp(
-              const Color.fromARGB(255, 255, 187, 174),
-              const Color.fromARGB(255, 226, 226, 255),
-              (_dayProgress - 0.75) * 4,
-            ) ??
-            const Color.fromARGB(255, 200, 200, 255);
-
-        _secondaryColor =
-            Color.lerp(
-              const Color.fromARGB(115, 115, 87, 87),
-              const Color.fromARGB(115, 120, 120, 180),
-              (_dayProgress - 0.75) * 4,
-            ) ??
-            const Color.fromARGB(115, 120, 120, 180);
+      case DayPhase.night || DayPhase.nightBefore:
+        debugPrint("$dayPhase");
+        double t = (dayProgress < -0.0417 || dayProgress > 1.1667)
+            ? 1.0
+            : ((dayProgress - 1.0) / (1.1667 - 1.0)).clamp(0.0, 1.0);
+        _mainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 231, 231, 250)),
+          HSVColor.fromColor(const Color.fromARGB(255, 231, 231, 250)),
+          t,
+        )!.toColor();
+        _complementaryMainColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 221, 221, 221)),
+          HSVColor.fromColor(const Color.fromARGB(255, 221, 221, 221)),
+          t,
+        )!.toColor();
+        _titleTextColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(255, 226, 226, 255)),
+          HSVColor.fromColor(const Color.fromARGB(255, 226, 226, 255)),
+          t,
+        )!.toColor();
+        _secondaryColor = HSVColor.lerp(
+          HSVColor.fromColor(const Color.fromARGB(115, 120, 120, 180)),
+          HSVColor.fromColor(const Color.fromARGB(115, 120, 120, 180)),
+          t,
+        )!.toColor();
         break;
     }
   }
@@ -934,14 +1056,33 @@ class _MyHomePageState extends State<MyHomePage> {
         var weatherCode = metarData?["weather_code"] ?? 0;
         double cloudCover = metarData?["cloudCover"] ?? 0.0;
 
-        _titleTextColor = applyWeatherTimeToTexts(_titleTextColor, weatherCode);
-        _mainColor = applyWeatherTimeToTexts(_mainColor, weatherCode);
-        _secondaryColor = applyWeatherTimeToTexts(_secondaryColor, weatherCode);
-
         //final testWeatherCode = 0;
-        //final testCloudCover = 100;
+        //final testCloudCover = 0.0;
         //weatherCode = testWeatherCode;
         //cloudCover = testCloudCover;
+
+        _titleTextColor = applyWeatherTimeToTexts(
+          _titleTextColor,
+          weatherCode,
+          cloudCover,
+        );
+        _mainColor = applyWeatherTimeToTexts(
+          _mainColor,
+          weatherCode,
+          cloudCover,
+        );
+        _secondaryColor = applyWeatherTimeToTexts(
+          _secondaryColor,
+          weatherCode,
+          cloudCover,
+        );
+
+        _complementaryMainColor = applyWeatherTimeToTexts(
+          _complementaryMainColor,
+          weatherCode,
+          cloudCover,
+        );
+
         if (metarData == null ||
             metarData.isEmpty ||
             forecastData == null ||
@@ -949,6 +1090,7 @@ class _MyHomePageState extends State<MyHomePage> {
           return Scaffold(
             backgroundColor: Colors.transparent,
             body: MovingCloudsBackground(
+              totalDuration: totalDuration ?? 0,
               shootingStars: ShootingStars(dayProgress: _dayProgress),
               dynamicStars: DynamicStars(dayProgress: _dayProgress),
               weatherCode: weatherCode,
@@ -974,87 +1116,98 @@ class _MyHomePageState extends State<MyHomePage> {
         var precipitation = forecastData["precipitationByHours"];
         var sunrise = DateTime.parse(forecastData["dailySunrise"]);
         var sunset = DateTime.parse(forecastData["dailySunset"]);
+        final bool isAppBarDark = true; // O calcula esto dinámicamente
 
-        return Scaffold(
-          floatingActionButton: FloatingActionButton(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(
-                30,
-              ), // o 0 para que sea cuadrado
-            ),
-
-            tooltip: "Invitame un café!",
-            backgroundColor: _titleTextColor,
-            onPressed: () async {
-              _launchUrl();
-            },
-            child: Icon(Icons.coffee, color: Colors.black87),
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle(
+            statusBarColor: Colors.white,
+            systemNavigationBarColor: Colors.white,
+            statusBarBrightness: Brightness.light,
+            systemNavigationBarIconBrightness: Brightness.light,
           ),
-          backgroundColor: Colors.transparent,
-          body: MovingCloudsBackground(
-            shootingStars: ShootingStars(dayProgress: _dayProgress),
-            dynamicStars: DynamicStars(dayProgress: _dayProgress),
-            weatherCode: weatherCode,
-            cloudCover: (cloudCover as num).toDouble(),
-            dynamicWeather: DynamicWeather(weatherCode: weatherCode),
-            dayProgress: _dayProgress,
-            child: RefreshIndicator(
-              color: _titleTextColor,
-              backgroundColor: _mainColor,
-              displacement: 0.0,
-              edgeOffset: 0,
-              onRefresh: () async {
-                await newWeatherApi.getPrecisePositionLocationMethod().then((
-                  _,
-                ) {
-                  newWeatherApi.findNerbyStation();
-                  newWeatherApi.getForecast();
-                  newWeatherApi.fetchMetarData();
-                  newWeatherApi.getICA();
-                  setState(() {
-                    _updateDayProgressAndColors();
-                  });
-                });
+          child: Scaffold(
+            floatingActionButton: FloatingActionButton(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(
+                  30,
+                ), // o 0 para que sea cuadrado
+              ),
+
+              tooltip: "Invitame un café!",
+              backgroundColor: _titleTextColor,
+              onPressed: () async {
+                _launchUrl();
               },
-              child: CustomScrollView(
-                slivers: [
-                  SliverList(
-                    delegate: SliverChildListDelegate([
-                      Padding(
-                        padding: EdgeInsets.only(top: 90),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.max,
-                          children: [
-                            IndexPage(
-                              cloudCover: cloudCover,
-                              weatherCode: weatherCode,
-                              weatherState: newWeatherApi,
-                              mainColor: _mainColor,
-                              separatedTemp: separatedTemp,
-                              secondaryColor: _secondaryColor,
-                              dayProgress: _dayProgress,
-                              sunset: sunset,
-                              sunrise: sunrise,
-                              hours: (hours as List<dynamic>)
-                                  .map((e) => e as int)
-                                  .toList(),
-                              tempByHours: (tempByHours as List<dynamic>)
-                                  .map((e) => e as double)
-                                  .toList(),
-                              titleTextColor: _titleTextColor,
-                              dates: (dates as List<dynamic>)
-                                  .map((e) => DateTime.parse(e))
-                                  .toList(),
-                              precipitation: (precipitation as List<dynamic>)
-                                  .map((e) => e as double)
-                                  .toList(),
-                            ),
-                          ],
+              child: Icon(Icons.coffee, color: Colors.black87),
+            ),
+            backgroundColor: Colors.transparent,
+            body: MovingCloudsBackground(
+              totalDuration: totalDuration ?? 0,
+              shootingStars: ShootingStars(dayProgress: _dayProgress),
+              dynamicStars: DynamicStars(dayProgress: _dayProgress),
+              weatherCode: weatherCode,
+              cloudCover: (cloudCover as num).toDouble(),
+              dynamicWeather: DynamicWeather(weatherCode: weatherCode),
+              dayProgress: _dayProgress,
+              child: RefreshIndicator(
+                color: _titleTextColor,
+                backgroundColor: _mainColor,
+                displacement: 0.0,
+                edgeOffset: 0,
+                onRefresh: () async {
+                  await newWeatherApi.getPrecisePositionLocationMethod().then((
+                    _,
+                  ) {
+                    newWeatherApi.findNerbyStation();
+                    newWeatherApi.getForecast();
+                    newWeatherApi.fetchMetarData();
+                    newWeatherApi.getICA();
+                    setState(() {
+                      _updateDayProgressAndColors();
+                    });
+                  });
+                },
+                child: CustomScrollView(
+                  slivers: [
+                    SliverList(
+                      delegate: SliverChildListDelegate([
+                        Padding(
+                          padding: EdgeInsets.only(top: 90),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.max,
+                            children: [
+                              IndexPage(
+                                complementaryMainColor: _complementaryMainColor,
+                                cloudCover: cloudCover,
+                                weatherCode: weatherCode,
+                                weatherState: newWeatherApi,
+                                mainColor: _mainColor,
+                                separatedTemp: separatedTemp,
+                                secondaryColor: _secondaryColor,
+                                dayProgress: _dayProgress,
+                                sunset: sunset,
+                                sunrise: sunrise,
+                                hours: (hours as List<dynamic>)
+                                    .map((e) => e as int)
+                                    .toList(),
+                                tempByHours: (tempByHours as List<dynamic>)
+                                    .map((e) => e as double)
+                                    .toList(),
+                                titleTextColor: _titleTextColor,
+                                dates: (dates as List<dynamic>)
+                                    .map((e) => DateTime.parse(e))
+                                    .toList(),
+                                precipitation: (precipitation as List<dynamic>)
+                                    .map((e) => e as double)
+                                    .toList(),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ]),
-                  ),
-                ],
+                      ]),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1081,10 +1234,12 @@ class IndexPage extends StatefulWidget {
     required this.sunset,
     required this.weatherCode,
     required this.cloudCover,
+    required this.complementaryMainColor,
   });
   final WeatherService weatherState;
   final Color mainColor;
   final Color secondaryColor;
+  final Color complementaryMainColor;
   final List<String> separatedTemp;
   final Color titleTextColor;
   final int weatherCode;
@@ -1273,14 +1428,28 @@ class _IndexPageState extends State<IndexPage> {
               crossAxisAlignment: CrossAxisAlignment.center,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  _getCondition(widget.weatherCode, widget.cloudCover),
-                  style: TextStyle(fontSize: 25, color: widget.mainColor),
+                Stack(
+                  children: [
+                    Text(
+                      siteName,
+                      style: GoogleFonts.kanit(
+                        fontSize: 35,
+                        foreground: Paint()
+                          ..style = PaintingStyle.stroke
+                          ..strokeWidth = 2
+                          ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                      ),
+                    ),
+                    Text(
+                      siteName,
+                      style: GoogleFonts.kanit(
+                        fontSize: 35,
+                        color: widget.mainColor,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  siteName,
-                  style: TextStyle(fontSize: 30, color: widget.mainColor),
-                ),
+
                 Row(
                   spacing: 0,
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1302,27 +1471,62 @@ class _IndexPageState extends State<IndexPage> {
                               ),
                             );
                           },
-                          child: Text(
-                            intigerPart[i],
-                            key: ValueKey(intigerPart[i]),
+                          child: Stack(
+                            children: [
+                              Text(
+                                intigerPart[i],
+                                key: ValueKey("stroke_${intigerPart[i]}"),
+                                style: GoogleFonts.kanit(
+                                  fontSize: 100,
+                                  fontWeight: FontWeight.bold,
+                                  foreground: Paint()
+                                    ..style = PaintingStyle.stroke
+                                    ..strokeWidth = 2
+                                    ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                                ),
+                                maxLines: 1,
+                              ),
+
+                              Text(
+                                intigerPart[i],
+                                key: ValueKey("fill_${intigerPart[i]}"),
+                                style: GoogleFonts.kanit(
+                                  fontSize: 100,
+                                  color: widget.titleTextColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                maxLines: 1,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                    Flexible(
+                      child: Stack(
+                        children: [
+                          Text(
+                            ".",
                             style: GoogleFonts.kanit(
-                              fontSize: 100,
+                              fontSize: 90,
+                              fontWeight: FontWeight.bold,
+                              foreground: Paint()
+                                ..style = PaintingStyle.stroke
+                                ..strokeWidth = 2
+                                ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                            ),
+                            maxLines: 1,
+                          ),
+                          Text(
+                            ".",
+                            style: GoogleFonts.kanit(
+                              fontSize: 90,
                               color: widget.titleTextColor,
                               fontWeight: FontWeight.bold,
                             ),
                             maxLines: 1,
                           ),
-                        ),
-                      ),
-                    Flexible(
-                      child: Text(
-                        ".",
-                        style: GoogleFonts.kanit(
-                          fontSize: 90,
-                          color: widget.titleTextColor,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        maxLines: 1,
+                        ],
                       ),
                     ),
                     Flexible(
@@ -1340,56 +1544,137 @@ class _IndexPageState extends State<IndexPage> {
                             ),
                           );
                         },
-                        child: Padding(
-                          key: ValueKey(
-                            widget.separatedTemp.isNotEmpty
-                                ? widget.separatedTemp[1]
-                                : 0,
-                          ),
-                          padding: const EdgeInsets.only(top: 0),
-                          child: Text(
-                            "${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1][0] : 0}",
-                            style: GoogleFonts.kanit(
-                              fontSize: 90,
-                              color: widget.titleTextColor,
-                              fontWeight: FontWeight.bold,
+                        child: Stack(
+                          children: [
+                            Text(
+                              "${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1][0] : 0}",
+                              style: GoogleFonts.kanit(
+                                fontSize: 90,
+                                fontWeight: FontWeight.bold,
+                                foreground: Paint()
+                                  ..style = PaintingStyle.stroke
+                                  ..strokeWidth = 2
+                                  ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                              ),
+                              key: ValueKey(
+                                "stroke_${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1] : 0}",
+                              ),
+                              maxLines: 2,
                             ),
-                            maxLines: 2,
-                          ),
+                            Text(
+                              "${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1][0] : 0}",
+                              style: GoogleFonts.kanit(
+                                fontSize: 90,
+                                color: widget.titleTextColor,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              key: ValueKey(
+                                "fill_${widget.separatedTemp.isNotEmpty ? widget.separatedTemp[1] : 0}",
+                              ),
+                              maxLines: 2,
+                            ),
+                          ],
                         ),
                       ),
                     ),
+                    Stack(
+                      children: [
+                        Text(
+                          "C°",
+                          style: GoogleFonts.kanit(
+                            fontSize: 90,
+                            fontWeight: FontWeight.bold,
+                            foreground: Paint()
+                              ..style = PaintingStyle.stroke
+                              ..strokeWidth = 2
+                              ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                          ),
+                          overflow: TextOverflow.visible,
+                        ),
+                        Text(
+                          "C°",
+                          style: GoogleFonts.kanit(
+                            fontSize: 90,
+                            color: widget.titleTextColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.visible,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                Stack(
+                  children: [
                     Text(
-                      "C°",
+                      _getCondition(widget.weatherCode, widget.cloudCover),
                       style: GoogleFonts.kanit(
-                        fontSize: 90,
-                        color: widget.titleTextColor,
-                        fontWeight: FontWeight.bold,
+                        fontSize: 25,
+                        foreground: Paint()
+                          ..style = PaintingStyle.stroke
+                          ..strokeWidth = 1.5
+                          ..color = Color.fromRGBO(0, 0, 0, 0.11),
                       ),
-                      overflow: TextOverflow.visible,
+                    ),
+                    Text(
+                      _getCondition(widget.weatherCode, widget.cloudCover),
+                      style: GoogleFonts.kanit(
+                        fontSize: 25,
+                        color: widget.complementaryMainColor,
+                      ),
                     ),
                   ],
                 ),
               ],
             ),
             Flexible(
-              child: Text(
-                "↑$maxTemp°/↓$minTemp°",
-                style: GoogleFonts.kanit(
-                  fontSize: 27,
-                  color: widget.mainColor,
-                  fontWeight: FontWeight.w300,
-                ),
+              child: Stack(
+                children: [
+                  Text(
+                    "↑$maxTemp°/↓$minTemp°",
+                    style: GoogleFonts.kanit(
+                      fontSize: 27,
+                      fontWeight: FontWeight.w300,
+                      foreground: Paint()
+                        ..style = PaintingStyle.stroke
+                        ..strokeWidth = 1.5
+                        ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                    ),
+                  ),
+                  Text(
+                    "↑$maxTemp°/↓$minTemp°",
+                    style: GoogleFonts.kanit(
+                      fontSize: 27,
+                      color: widget.complementaryMainColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                ],
               ),
             ),
             Flexible(
-              child: Text(
-                "Sensación térmica: $heatIndex °C",
-                style: GoogleFonts.kanit(
-                  fontSize: 27,
-                  color: widget.mainColor,
-                  fontWeight: FontWeight.w300,
-                ),
+              child: Stack(
+                children: [
+                  Text(
+                    "Sensación térmica: $heatIndex °C",
+                    style: GoogleFonts.kanit(
+                      fontSize: 27,
+                      fontWeight: FontWeight.w300,
+                      foreground: Paint()
+                        ..style = PaintingStyle.stroke
+                        ..strokeWidth = 1.5
+                        ..color = Color.fromRGBO(0, 0, 0, 0.11),
+                    ),
+                  ),
+                  Text(
+                    "Sensación térmica: $heatIndex °C",
+                    style: GoogleFonts.kanit(
+                      fontSize: 27,
+                      color: widget.complementaryMainColor,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                ],
               ),
             ),
             Container(
@@ -1455,19 +1740,19 @@ class _IndexPageState extends State<IndexPage> {
                           height: 150,
                           child: LineChart(
                             LineChartData(
-                              minX: 0,
+                              minX: -0.1,
                               maxX: spots.length - 1,
                               minY: (tempByHours.first) - 20,
                               maxY: (tempByHours.first) + 40,
-                              //minY: 0,
-                              //maxY: 100,
                               gridData: FlGridData(show: false),
                               borderData: FlBorderData(show: false),
                               clipData: FlClipData.none(),
                               lineTouchData: LineTouchData(
                                 enabled: false,
                                 touchTooltipData: LineTouchTooltipData(
-                                  tooltipBgColor: Color.fromARGB(0, 0, 0, 0),
+                                  getTooltipColor: (LineBarSpot touchedSpot) {
+                                    return Color.fromARGB(0, 0, 0, 0);
+                                  },
                                   tooltipMargin: 1,
                                   tooltipPadding: EdgeInsets.all(20),
                                   getTooltipItems:
@@ -1501,10 +1786,35 @@ class _IndexPageState extends State<IndexPage> {
                                                   .spotIndex];
 
                                           return LineTooltipItem(
-                                            "$hour12 $amPm \n $temp°C\n$precipitationType $precip%",
+                                            "",
                                             GoogleFonts.kanit(
                                               color: Colors.white,
                                             ),
+                                            children: [
+                                              TextSpan(
+                                                text:
+                                                    "$hour12 $amPm\n$temp°C\n",
+                                                style: GoogleFonts.kanit(
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                              TextSpan(
+                                                text:
+                                                    "$precipitationType", // Unicode de lluvia
+                                                style: TextStyle(
+                                                  fontFamily: "WeatherIcons",
+                                                  fontSize: 17,
+                                                  color: widget.titleTextColor,
+                                                ),
+                                              ),
+                                              TextSpan(
+                                                text:
+                                                    " $precip%", // texto normal
+                                                style: GoogleFonts.kanit(
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ],
                                           );
                                         }).toList();
                                       },
@@ -1743,6 +2053,8 @@ class Recomendations extends StatelessWidget {
     var precipitationByHours =
         forecastData?["precipitationByHours"] ?? [0, 0, 0];
 
+    final PageController _controller = PageController();
+
     return LayoutBuilder(
       builder: (context, constraits) {
         return Card(
@@ -1753,6 +2065,7 @@ class Recomendations extends StatelessWidget {
             child: SizedBox(
               width: constraits.maxWidth - 80,
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 spacing: 10,
                 children: [
                   Row(
@@ -1768,37 +2081,72 @@ class Recomendations extends StatelessWidget {
                       Icon(Icons.recommend, color: Colors.white, size: 18),
                     ],
                   ),
-                  Column(
-                    spacing: 5,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(
-                      _getRecommendations(
-                        temperature,
-                        humidity,
-                        heatIndex,
-                        windSpeed,
-                        precipitationByHours[0],
-                        uvIndex,
-                        dewPoint,
-                      ).length,
-                      (index) {
-                        return Text(
-                          _getRecommendations(
-                            temperature,
-                            humidity,
-                            heatIndex,
-                            windSpeed,
-                            precipitationByHours[0],
-                            uvIndex,
-                            dewPoint,
-                          )[index],
-                          style: GoogleFonts.kanit(
-                            color: Colors.white,
-                            fontSize: 14,
+
+                  SizedBox(
+                    height: 100,
+                    child: PageView(
+                      controller: _controller,
+                      children: [
+                        Column(
+                          spacing: 5,
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: List.generate(
+                            _getRecommendations(
+                              temperature,
+                              humidity,
+                              heatIndex,
+                              windSpeed,
+                              precipitationByHours[0],
+                              uvIndex,
+                              dewPoint,
+                            ).length,
+                            (index) {
+                              return Text(
+                                _getRecommendations(
+                                  temperature,
+                                  humidity,
+                                  heatIndex,
+                                  windSpeed,
+                                  precipitationByHours[0],
+                                  uvIndex,
+                                  dewPoint,
+                                )[index],
+                                style: GoogleFonts.kanit(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
+                              );
+                            },
                           ),
-                        );
-                      },
+                        ),
+
+                        Column(
+                          spacing: 5,
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              "Próximamente...",
+                              style: GoogleFonts.kanit(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SmoothPageIndicator(
+                    controller: _controller,
+                    count: 2,
+                    effect: WormEffect(
+                      dotHeight: 8,
+                      dotWidth: 8,
+                      activeDotColor: Colors.white,
+                      dotColor: Colors.white54,
                     ),
                   ),
                 ],
@@ -1961,14 +2309,16 @@ class _SunCurveState extends State<SunCurve> {
         ? 12
         : sunset24Hour.hourOfPeriod;
     final sunsetAmPm = sunset24Hour.period == DayPeriod.am ? "AM" : "PM";
-    final sunsetHour = "${sunset24Hour.hourOfPeriod}:${sunset24Hour.minute}";
+    final sunsetHour =
+        "${sunset24Hour.hourOfPeriod}:${sunset24Hour.minute.toString().padLeft(2, '0')} $sunsetAmPm";
 
     final sunrise24Hour = TimeOfDay(hour: sunrise.hour, minute: sunrise.minute);
     final sunrise12Hour = sunrise24Hour.hourOfPeriod == 0
         ? 12
         : sunrise24Hour.hourOfPeriod;
     final sunriseAmPm = sunrise24Hour.period == DayPeriod.am ? "AM" : "PM";
-    final sunriseHour = "${sunrise24Hour.hourOfPeriod}:${sunrise24Hour.minute}";
+    final sunriseHour =
+        "${sunrise24Hour.hourOfPeriod}:${sunrise24Hour.minute.toString().padLeft(2, '0')} $sunriseAmPm";
 
     return LayoutBuilder(
       builder: (context, constraits) {
@@ -2002,7 +2352,7 @@ class _SunCurveState extends State<SunCurve> {
                             ),
                           ),
                           Text(
-                            "$sunriseHour $sunriseAmPm",
+                            sunriseHour,
                             style: GoogleFonts.kanit(color: Colors.white),
                           ),
                         ],
@@ -2017,7 +2367,7 @@ class _SunCurveState extends State<SunCurve> {
                             ),
                           ),
                           Text(
-                            "$sunsetHour $sunsetAmPm",
+                            sunsetHour,
                             style: GoogleFonts.kanit(color: Colors.white),
                           ),
                         ],
@@ -2124,7 +2474,7 @@ class Cards extends StatelessWidget {
     required this.titleTextColor,
   });
 
-  final mainColor;
+  final Color mainColor;
   final secondaryColor;
   final titleTextColor;
   final cardPadding = EdgeInsets.all(15);
@@ -2648,7 +2998,7 @@ class Cards extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                           Text(
-                            "$pressure hPa",
+                            "$pressure hPa ",
                             style: GoogleFonts.kanit(
                               fontSize: fontCardSize - 2,
                               color: Colors.white,
@@ -2664,7 +3014,10 @@ class Cards extends StatelessWidget {
                               ),
                               value: (double.parse(pressure)) / 2000,
                               color: titleTextColor,
-                              backgroundColor: mainColor,
+                              backgroundColor: Color.alphaBlend(
+                                mainColor,
+                                titleTextColor,
+                              ),
                             ),
                           ),
                         ],
@@ -2867,7 +3220,10 @@ class Cards extends StatelessWidget {
                                 ),
                                 value: (humidity) / 100,
                                 color: titleTextColor,
-                                backgroundColor: mainColor,
+                                backgroundColor: Color.alphaBlend(
+                                  mainColor,
+                                  titleTextColor,
+                                ),
                               ),
                             ),
                           ],
@@ -2986,10 +3342,10 @@ class DynamicStars extends StatefulWidget {
   final double dayProgress;
   const DynamicStars({super.key, required this.dayProgress});
   @override
-  _DynamicStartsState createState() => _DynamicStartsState();
+  _DynamicStarsState createState() => _DynamicStarsState();
 }
 
-class _DynamicStartsState extends State<DynamicStars>
+class _DynamicStarsState extends State<DynamicStars>
     with SingleTickerProviderStateMixin {
   late double dayProgress;
   late AnimationController _controller;
@@ -3003,6 +3359,12 @@ class _DynamicStartsState extends State<DynamicStars>
       duration: Duration(seconds: 500),
     )..repeat();
     dayProgress = widget.dayProgress;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
@@ -3029,7 +3391,7 @@ class StarsPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     double customDayProgress = dayProgress;
-    if (dayProgress < -0.6 || dayProgress >= 0.2 && dayProgress <= 0.8) return;
+    if (dayProgress < -0.6 || dayProgress >= 0.02 && dayProgress <= 0.8) return;
 
     final paint = Paint()
       ..color = Colors.white
@@ -3100,9 +3462,10 @@ class _ShootingStarsState extends State<ShootingStars>
   }
 
   void _startShootingStar() {
+    if (!mounted) return;
     _start = Offset(_random.nextDouble() * 500, _random.nextDouble() * 300);
     _angle = (pi / 4) + (_random.nextDouble() - 0.5) * pi / 6;
-    if ((widget.dayProgress >= -0.6 && widget.dayProgress <= 0.2) ||
+    if ((widget.dayProgress >= -0.6 && widget.dayProgress <= 0.02) ||
         widget.dayProgress >= 0.8) {
       _isVisible = true;
     }
@@ -3196,6 +3559,7 @@ class MovingCloudsBackground extends StatefulWidget {
   final double cloudCover;
   final int weatherCode;
   final Widget shootingStars;
+  final int totalDuration;
   const MovingCloudsBackground({
     super.key,
     required this.child,
@@ -3205,6 +3569,7 @@ class MovingCloudsBackground extends StatefulWidget {
     required this.weatherCode,
     required this.dynamicStars,
     required this.shootingStars,
+    required this.totalDuration,
   });
 
   @override
@@ -3250,6 +3615,7 @@ class _MovingCloudsBackgroundState extends State<MovingCloudsBackground>
       builder: (_, __) {
         return CustomPaint(
           painter: CloudyBakcgroundPainter(
+            totalDuration: widget.totalDuration,
             cloudCover: widget.cloudCover,
             weathercode: widget.weatherCode,
             dayProgress: widget.dayProgress,
@@ -3284,21 +3650,26 @@ class CloudyBakcgroundPainter extends CustomPainter {
     required this.dayProgress,
     required this.cloudCover,
     required this.weathercode,
+    required this.totalDuration,
   });
 
   final double cloud1X;
   final double cloud2X;
   final double cloud3X;
   double dayProgress;
+  int totalDuration;
   final double cloudCover;
   final int weathercode;
 
   LinearGradient applyWeatherTimeToBackground(
     LinearGradient basebackground,
     int weatherCode,
+    double cloudCover,
+    double dayProgress,
   ) {
     Color overlay;
     final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    final intensity = weatherRange.intensity - (dayProgress * dayProgress * 8);
     switch (weatherRange.description) {
       case Condition.rain ||
           Condition.rainShowers ||
@@ -3306,7 +3677,6 @@ class CloudyBakcgroundPainter extends CustomPainter {
           Condition.drizzle ||
           Condition.freezingDrizzle ||
           Condition.thunderstorm:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(
           (intensity * 1.9 as num).toInt(),
           150,
@@ -3324,7 +3694,6 @@ class CloudyBakcgroundPainter extends CustomPainter {
         );
 
       case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(
           (intensity * 2 / 0.5 as num).toInt(),
           150,
@@ -3342,7 +3711,6 @@ class CloudyBakcgroundPainter extends CustomPainter {
         );
 
       case Condition.thunderstormWithHail:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(
           (intensity * 2 / 0.57 as num).toInt(),
           150,
@@ -3359,14 +3727,37 @@ class CloudyBakcgroundPainter extends CustomPainter {
           stops: basebackground.stops,
         );
 
-      case _:
+      case Condition.cloudy || Condition.fog:
+        overlay = Color.fromARGB(
+          ((intensity * cloudCover / (dayProgress * 25)).toInt()).clamp(0, 255),
+          150,
+          150,
+          150,
+        );
+        List<Color> tintedColors = basebackground.colors.map((color) {
+          return Color.alphaBlend(overlay, color);
+        }).toList();
+        return LinearGradient(
+          begin: basebackground.begin,
+          end: basebackground.end,
+          colors: tintedColors,
+          stops: basebackground.stops,
+        );
+
+      case Condition.clear || Condition.unknown:
         return basebackground;
     }
   }
 
-  Color applyWeatherTimeToclouds(Color cloudColor, int weatherCode) {
+  Color applyWeatherTimeToclouds(
+    Color cloudColor,
+    int weatherCode,
+    double dayProgress,
+  ) {
     Color overlay;
     final weatherRange = WeatherCodesRanges(weatherCode: weatherCode);
+    final intensity =
+        weatherRange.intensity - (dayProgress * dayProgress * 8).toInt();
     switch (weatherRange.description) {
       case Condition.rain ||
           Condition.rainShowers ||
@@ -3374,21 +3765,22 @@ class CloudyBakcgroundPainter extends CustomPainter {
           Condition.drizzle ||
           Condition.freezingDrizzle ||
           Condition.thunderstorm:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(intensity, 133, 133, 133);
         break;
 
       case Condition.snowFall || Condition.snowGrains || Condition.snowShowers:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(intensity, 133, 133, 133);
         break;
 
       case Condition.thunderstormWithHail:
-        final intensity = weatherRange.intensity;
         overlay = Color.fromARGB(intensity, 133, 133, 133);
         break;
 
-      case _:
+      case Condition.cloudy || Condition.fog:
+        overlay = Color.fromARGB(intensity, 133, 133, 133);
+        break;
+
+      case Condition.clear || Condition.unknown:
         return cloudColor;
     }
 
@@ -3418,6 +3810,8 @@ class CloudyBakcgroundPainter extends CustomPainter {
     final double maxSize = 230;
 
     for (int i = 0; i < cloudCount; i++) {
+      final Random customRandom = Random(i - 12);
+
       final offset = baseOffsets[i % baseOffsets.length];
 
       final dx = offset.dx + (random.nextDouble() - 0.5) * 0.2;
@@ -3427,11 +3821,26 @@ class CloudyBakcgroundPainter extends CustomPainter {
         maxSize,
         random.nextDouble() * cloudCover,
       )!;
+
       final double opacity = (0.4 + 0.5 * cloudCover).clamp(0.0, 1.0);
-      paint.color = baseColor.withAlpha((opacity * 50).toInt());
-      canvas.drawCircle(
-        Offset(size.width * dx, size.height * dy),
-        radius,
+      int alpha = (opacity * random.nextInt(105)).toInt().clamp(0, 255);
+      Color basecolorWithAlpha = baseColor.withAlpha(alpha);
+      final HSLColor hsl = HSLColor.fromColor(basecolorWithAlpha);
+
+      final lightnessVariation = (0.55 + customRandom.nextDouble() * 0.5).clamp(
+        0.0,
+        1.0,
+      );
+
+      final Color shadedColor = hsl.withLightness(lightnessVariation).toColor();
+
+      paint.color = shadedColor;
+
+      canvas.drawOval(
+        Rect.fromCircle(
+          center: Offset(size.width * dx, size.height * dy),
+          radius: radius,
+        ),
         paint,
       );
     }
@@ -3458,6 +3867,23 @@ class CloudyBakcgroundPainter extends CustomPainter {
     }
   }
 
+  LinearGradient lerpGradient(LinearGradient a, LinearGradient b, double t) {
+    final colors = List<Color>.generate(
+      a.colors.length,
+      (i) => HSLColor.lerp(
+        HSLColor.fromColor(a.colors[i]),
+        HSLColor.fromColor(b.colors[i]),
+        t,
+      )!.toColor(),
+    );
+    return LinearGradient(
+      begin: a.begin,
+      end: b.end,
+      colors: colors,
+      stops: a.stops,
+    );
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
@@ -3466,163 +3892,190 @@ class CloudyBakcgroundPainter extends CustomPainter {
     final Paint backgroundPaint = Paint();
     LinearGradient backgroundColor;
 
-    if (dayProgress == -2.0) {
-      backgroundColor = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          const Color.fromARGB(255, 13, 110, 221), // mediodía
-          const Color.fromARGB(255, 201, 223, 252),
-        ],
-        stops: [0.0, 1.0],
-      );
-    } else if (dayProgress < 0) {
-      backgroundColor = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          const Color.fromARGB(255, 10, 10, 30), // Negro
-          const Color.fromARGB(255, 5, 5, 15), // Más oscuro
-        ],
-        stops: [0.0, 1.0],
-      );
-    } else if (dayProgress <= 0.2) {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color.fromARGB(255, 20, 20, 40), // Noche inicial
-            const Color.fromARGB(255, 255, 157, 173), // Rosado amanecer
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(148, 113, 108, 173), // Rosado amanecer
-            const Color.fromARGB(255, 165, 220, 252), // Noche inicial
-          ],
-          stops: [0.0, 1.0],
-        ),
-        dayProgress / 0.25,
-      )!;
-    } else if (dayProgress <= 0.5) {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color.fromARGB(148, 113, 108, 173), // Rosado amanecer
-            const Color.fromARGB(255, 165, 220, 252), // Noche inicial
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 13, 110, 221), // mediodía
-            const Color.fromARGB(255, 201, 223, 252),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        dayProgress / 0.25,
-      )!;
-    } else if (dayProgress < 0.675) {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 62, 122, 199),
-            const Color.fromARGB(255, 255, 234, 234),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 20, 122, 255), // mediodía
-            const Color.fromARGB(255, 253, 229, 229),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        dayProgress / 0.25,
-      )!;
-    } else if (dayProgress <= 0.75) {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 255, 221, 221), //mediodía
-            const Color.fromARGB(255, 255, 0, 0),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 46, 171, 255), // atardecer
-            const Color.fromARGB(255, 253, 115, 61),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        (dayProgress - 0.25) / 0.25,
-      )!;
-    } else if (dayProgress <= 0.89) {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 46, 171, 255), // atardecer
-            const Color.fromARGB(255, 253, 115, 61),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 29, 157, 189), // Atardecer
-            const Color.fromARGB(183, 255, 124, 72),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        (dayProgress - 0.75) / 0.25,
-      )!;
-    } else {
-      backgroundColor = LinearGradient.lerp(
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 0, 204, 255), // Atardecer
-            const Color.fromARGB(108, 255, 110, 53),
-          ],
-          stops: [0.0, 1.0],
-        ),
-        LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color.fromARGB(255, 10, 10, 30), // Negro
-            const Color.fromARGB(255, 5, 5, 15), // Más oscuro
-          ],
-          stops: [0.0, 1.0],
-        ),
-        (dayProgress - 0.75) / 0.25,
-      )!;
+    final dayPhase = getDayPhase(dayProgress, totalDuration);
+    const int alpha = 255;
+
+    switch (dayPhase) {
+      case DayPhase.dawn:
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 20, 20, 40), // Noche inicial
+              const Color.fromARGB(alpha, 134, 106, 191),
+              const Color.fromARGB(alpha, 255, 157, 173), // Rosado amanecer
+              const Color.fromARGB(alpha, 255, 241, 147),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(255, 124, 206, 253),
+              const Color.fromARGB(alpha, 124, 207, 255),
+              const Color.fromARGB(alpha, 110, 190, 255),
+              const Color.fromARGB(alpha, 255, 241, 147),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          ((dayProgress + 0.0417) / (0.0833 + 0.0417)).clamp(0.0, 1.0),
+        );
+        break;
+      case DayPhase.morning:
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color.fromARGB(alpha, 51, 156, 218),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 255, 241, 147),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 33, 136, 253),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 65, 147, 241),
+              const Color.fromARGB(alpha, 148, 194, 255),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          ((dayProgress - 0.0833) / (0.4167 - 0.0833)).clamp(0.0, 1.0),
+        );
+        break;
+
+      case DayPhase.noon:
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 33, 136, 253),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 65, 147, 241),
+              const Color.fromARGB(alpha, 148, 194, 255),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 71, 155, 252),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 80, 150, 230),
+              const Color.fromARGB(alpha, 148, 194, 255),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          ((dayProgress - 0.4167) / (0.6667 - 0.4167)).clamp(0.0, 1.0),
+        );
+        break;
+      case DayPhase.afternoon:
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 71, 155, 252),
+              const Color.fromARGB(alpha, 67, 169, 252),
+              const Color.fromARGB(alpha, 80, 150, 230),
+              const Color.fromARGB(alpha, 148, 194, 255),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 79, 120, 192),
+              const Color.fromARGB(255, 154, 132, 252),
+              const Color.fromARGB(255, 222, 164, 255),
+              const Color.fromARGB(alpha, 255, 213, 154),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          ((dayProgress - 0.6667) / (1.0 - 0.6667)).clamp(0.0, 1.0),
+        );
+        break;
+      case DayPhase.sunset:
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha - 50, 79, 120, 192),
+              const Color.fromARGB(alpha, 252, 132, 188),
+              const Color.fromARGB(alpha, 255, 164, 165),
+              const Color.fromARGB(alpha, 255, 213, 154),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha - 50, 79, 120, 192),
+              const Color.fromARGB(alpha - 50, 252, 132, 188),
+              const Color.fromARGB(alpha - 50, 255, 164, 165), // atardecer
+              const Color.fromARGB(alpha - 50, 255, 213, 154),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          ((dayProgress - 1.0) / (1.1667 - 1.0)).clamp(0.0, 1.0),
+        );
+        break;
+
+      case DayPhase.night || DayPhase.nightBefore:
+        double t;
+        if (dayProgress < -0.0417) {
+          t = 1.0;
+        } else if (dayProgress > 1.1667) {
+          t = 1.0;
+        } else {
+          t = ((dayProgress - 1.0) / (1.1667 - 1.0)).clamp(0.0, 1.0);
+        }
+
+        backgroundColor = lerpGradient(
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 22, 22, 51),
+              const Color.fromARGB(alpha, 42, 37, 78),
+              const Color.fromARGB(alpha, 14, 10, 20),
+              const Color.fromARGB(alpha, 33, 23, 48),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color.fromARGB(alpha, 22, 22, 51),
+              const Color.fromARGB(alpha, 42, 37, 78),
+              const Color.fromARGB(alpha, 14, 10, 20),
+              const Color.fromARGB(alpha, 33, 23, 48),
+            ],
+            stops: [0.0, 0.4, 0.7, 1.0],
+          ),
+          t,
+        );
+        break;
     }
 
     backgroundColor = applyWeatherTimeToBackground(
       backgroundColor,
       weathercode,
+      cloudCover,
+      dayProgress,
     );
 
     backgroundPaint.shader = backgroundColor.createShader(
@@ -3646,7 +4099,11 @@ class CloudyBakcgroundPainter extends CustomPainter {
 
     final double normalizedCloudCover = (cloudCover / 100.0).clamp(0.0, 1.0);
 
-    cloud1Color = applyWeatherTimeToclouds(cloud1Color, weathercode);
+    cloud1Color = applyWeatherTimeToclouds(
+      cloud1Color,
+      weathercode,
+      dayProgress,
+    );
 
     paintDynamicClouds(
       canvas,
@@ -3656,42 +4113,6 @@ class CloudyBakcgroundPainter extends CustomPainter {
       weathercode,
       baseOffsets,
       cloud1Color,
-    );
-
-    // Paleta para la línea
-    final Color lineColor;
-    if (dayProgress < 0.5) {
-      lineColor =
-          Color.lerp(
-            const Color.fromARGB(36, 255, 238, 0), // Amanecer
-            const Color.fromARGB(38, 60, 255, 0), // Mediodía
-            dayProgress * 2,
-          ) ??
-          const Color.fromARGB(146, 60, 255, 0);
-    } else if (dayProgress < 0.75) {
-      lineColor =
-          Color.lerp(
-            const Color.fromARGB(8, 60, 255, 0), // Mediodía
-            const Color.fromARGB(146, 178, 34, 34), // Atardecer
-            (dayProgress - 0.5) * 4,
-          ) ??
-          const Color.fromARGB(146, 60, 255, 0);
-    } else {
-      lineColor =
-          Color.lerp(
-            const Color.fromARGB(48, 255, 22, 22), // Atardecer
-            const Color.fromARGB(34, 249, 255, 158), // Noche
-            (dayProgress - 0.75) * 4,
-          ) ??
-          const Color.fromARGB(146, 0, 0, 205);
-    }
-
-    paint.color = lineColor;
-    paint.strokeWidth = 100;
-    canvas.drawLine(
-      Offset(size.width - 600, size.height),
-      Offset(size.width, size.height),
-      paint,
     );
   }
 
@@ -3749,6 +4170,8 @@ class SunPathPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (progress < 0.0) {
       progress = 0.0;
+    } else if (progress > 1.0) {
+      progress = 1.0;
     }
 
     final paintCurve = Paint()
