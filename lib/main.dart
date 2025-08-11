@@ -48,6 +48,7 @@ void notificationsCallback() {
       final weatherService = WeatherService();
       try {
         await Future.wait([
+          initializeDateFormatting("es", null),
           weatherService.getPosition(),
           weatherService.loadStation(),
         ]);
@@ -56,6 +57,7 @@ void notificationsCallback() {
           weatherService.getForecast(),
           weatherService.fetchMetarData(),
           weatherService.getICA(),
+          weatherService.getLunarPhase(),
         ]);
       } catch (e) {
         debugPrint("Error en Workmanager: $e");
@@ -427,6 +429,7 @@ class _MyHomePageState extends State<MyHomePage> {
       await Future.wait([
         newWeatherService.fetchMetarData(),
         newWeatherService.getICA(),
+        newWeatherService.getLunarPhase(),
       ]);
     } catch (e) {
       debugPrint("Error en _initAsyncStuff: $e");
@@ -807,7 +810,7 @@ class _MyHomePageState extends State<MyHomePage> {
     int? daylightDurationMin;
     DateTime now = DateTime.now().toLocal();
     //now = DateTime.parse(
-    //"${now.year.toString()}-${now.month.toString().padLeft(2, "0")}-${now.day.toString().padLeft(2, "0")} 21:50:00",
+    //"${now.year.toString()}-${now.month.toString().padLeft(2, "0")}-${now.day.toString().padLeft(2, "0")} 06:50:00",
     //).toLocal();
     int weatherCode = 0;
     double testProgress = 0.9;
@@ -1162,6 +1165,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     newWeatherApi.getForecast();
                     newWeatherApi.fetchMetarData();
                     newWeatherApi.getICA();
+                    newWeatherApi.getLunarPhase();
                     setState(() {
                       _updateDayProgressAndColors();
                     });
@@ -1742,8 +1746,8 @@ class _IndexPageState extends State<IndexPage> {
                             LineChartData(
                               minX: -0.1,
                               maxX: spots.length - 1,
-                              minY: (tempByHours.first) - 20,
-                              maxY: (tempByHours.first) + 40,
+                              minY: (tempByHours.first) - 15,
+                              maxY: (tempByHours.first) + 50,
                               gridData: FlGridData(show: false),
                               borderData: FlBorderData(show: false),
                               clipData: FlClipData.none(),
@@ -1987,6 +1991,15 @@ class _IndexPageState extends State<IndexPage> {
               mainColor: widget.mainColor,
               secondaryColor: widget.secondaryColor,
               titleTextColor: widget.titleTextColor,
+            ),
+            MoonPhase(
+              progress: widget.dayProgress,
+              sunrise: widget.sunrise,
+              sunset: widget.sunset,
+              mainColor: widget.mainColor,
+              secondaryColor: widget.secondaryColor,
+              titleTextColor: widget.titleTextColor,
+              weatherState: widget.weatherState,
             ),
           ],
         );
@@ -2324,7 +2337,7 @@ class _SunCurveState extends State<SunCurve> {
       builder: (context, constraits) {
         final double availableWith = constraits.maxWidth;
         return Padding(
-          padding: EdgeInsetsGeometry.only(bottom: 100),
+          padding: EdgeInsetsGeometry.only(bottom: 20),
           child: Card(
             elevation: 4,
             color: widget.secondaryColor,
@@ -2332,11 +2345,17 @@ class _SunCurveState extends State<SunCurve> {
               height: 200,
               width: availableWith - 50,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
+                spacing: 10,
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
+                  Text(
+                    "Horario solar",
+                    style: GoogleFonts.kanit(color: Colors.white, fontSize: 20),
+                  ),
                   SizedBox(
-                    width: 300,
-                    height: 120,
+                    width: 250,
+                    height: 50,
                     child: SunPath(dayProgress: widget.progress),
                   ),
                   Row(
@@ -2368,6 +2387,148 @@ class _SunCurveState extends State<SunCurve> {
                           ),
                           Text(
                             sunsetHour,
+                            style: GoogleFonts.kanit(color: Colors.white),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class MoonPhase extends StatefulWidget {
+  const MoonPhase({
+    super.key,
+    required this.progress,
+    required this.sunset,
+    required this.sunrise,
+    required this.mainColor,
+    required this.secondaryColor,
+    required this.titleTextColor,
+    required this.weatherState,
+  });
+
+  final double progress;
+  final DateTime sunset;
+  final DateTime sunrise;
+  final mainColor;
+  final secondaryColor;
+  final titleTextColor;
+  final WeatherService weatherState;
+
+  @override
+  State<MoonPhase> createState() => _MoonPhaseState();
+}
+
+class _MoonPhaseState extends State<MoonPhase> {
+  late Color secondaryColor;
+  late DateTime sunset;
+  late DateTime sunrise;
+  late double progress;
+
+  @override
+  void initState() {
+    super.initState();
+    secondaryColor = widget.secondaryColor;
+    sunset = widget.sunset;
+    sunrise = widget.sunrise;
+    progress = widget.progress;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final moonData = widget.weatherState.moonCachedData;
+    final times = moonData?["times"];
+    final alwaysUp = times["alwaysUp"];
+    final alwaysDonw = times["alwaysDonw"];
+    final rise = DateTime.parse(times["rise"]).toLocal();
+    final set = DateTime.parse(times["set"]).toLocal();
+
+    final set24Hour = TimeOfDay(hour: set.hour, minute: set.minute);
+    final set12Hour = set24Hour.hourOfPeriod == 0 ? 12 : set24Hour.hourOfPeriod;
+    final setAmPm = set24Hour.period == DayPeriod.am ? "AM" : "PM";
+    final setHour =
+        "${set24Hour.hourOfPeriod}:${set24Hour.minute.toString().padLeft(2, '0')} $setAmPm";
+
+    final rise24Hour = TimeOfDay(hour: rise.hour, minute: rise.minute);
+    final rise12Hour = rise24Hour.hourOfPeriod == 0
+        ? 12
+        : rise24Hour.hourOfPeriod;
+    final riseAmPm = rise24Hour.period == DayPeriod.am ? "AM" : "PM";
+    final riseHour =
+        "${rise24Hour.hourOfPeriod}:${rise24Hour.minute.toString().padLeft(2, '0')} $riseAmPm";
+
+    final ill = moonData?["illumination"];
+    final moonPhaseName = ill?["phaseName"];
+    final moonPhase = ill?["phase"];
+    final fraction = ill?["fraction"];
+    final angle = ill?["angle"];
+    final moonAge = ill?["ageDays"];
+
+    return LayoutBuilder(
+      builder: (context, constraits) {
+        final double availableWith = constraits.maxWidth;
+        return Padding(
+          padding: EdgeInsetsGeometry.only(bottom: 100),
+          child: Card(
+            elevation: 4,
+            color: widget.secondaryColor,
+            child: SizedBox(
+              height: 225,
+              width: availableWith - 50,
+              child: Column(
+                spacing: 10,
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    "$moonPhaseName",
+                    style: GoogleFonts.kanit(color: Colors.white, fontSize: 20),
+                  ),
+                  SizedBox(
+                    width: 250,
+                    height: 70,
+                    child: MoonPhasePainter(
+                      moonPhase: moonPhase,
+                      fraction: fraction,
+                    ),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      Column(
+                        children: [
+                          Text(
+                            "Salida",
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 17,
+                            ),
+                          ),
+                          Text(
+                            riseHour,
+                            style: GoogleFonts.kanit(color: Colors.white),
+                          ),
+                        ],
+                      ),
+                      Column(
+                        children: [
+                          Text(
+                            "Puesta",
+                            style: GoogleFonts.kanit(
+                              color: Colors.white,
+                              fontSize: 17,
+                            ),
+                          ),
+                          Text(
+                            setHour,
                             style: GoogleFonts.kanit(color: Colors.white),
                           ),
                         ],
@@ -3014,9 +3175,11 @@ class Cards extends StatelessWidget {
                               ),
                               value: (double.parse(pressure)) / 2000,
                               color: titleTextColor,
-                              backgroundColor: Color.alphaBlend(
-                                mainColor,
-                                titleTextColor,
+                              backgroundColor: Color.fromARGB(
+                                ((mainColor.a * 255.0).round() & 0xff) - 122,
+                                ((mainColor.r * 255.0).round() & 0xff) - 255,
+                                ((mainColor.g * 255.0).round() & 0xff) - 255,
+                                ((mainColor.b * 255.0).round() & 0xff) - 255,
                               ),
                             ),
                           ),
@@ -3220,9 +3383,11 @@ class Cards extends StatelessWidget {
                                 ),
                                 value: (humidity) / 100,
                                 color: titleTextColor,
-                                backgroundColor: Color.alphaBlend(
-                                  mainColor,
-                                  titleTextColor,
+                                backgroundColor: Color.fromARGB(
+                                  ((mainColor.a * 255.0).round() & 0xff) - 122,
+                                  ((mainColor.r * 255.0).round() & 0xff) - 255,
+                                  ((mainColor.g * 255.0).round() & 0xff) - 255,
+                                  ((mainColor.b * 255.0).round() & 0xff) - 255,
                                 ),
                               ),
                             ),
@@ -4125,6 +4290,124 @@ class CloudyBakcgroundPainter extends CustomPainter {
   }
 }
 
+class MoonPhasePainter extends StatefulWidget {
+  const MoonPhasePainter({
+    super.key,
+    required this.moonPhase,
+    required this.fraction,
+  });
+  final double moonPhase;
+  final double fraction;
+
+  @override
+  State<MoonPhasePainter> createState() => _MoonPhasePainterState();
+}
+
+class _MoonPhasePainterState extends State<MoonPhasePainter> {
+  late double moonPhase;
+  late double fraction;
+
+  @override
+  void initState() {
+    super.initState();
+    moonPhase = widget.moonPhase;
+    fraction = widget.fraction;
+  }
+
+  @override
+  void didUpdateWidget(MoonPhasePainter oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.moonPhase != widget.moonPhase) {
+      setState(() {
+        moonPhase = widget.moonPhase;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: MoonPhaseCustomPaint(
+        moonPhase: widget.moonPhase,
+        fraction: widget.fraction,
+      ),
+      key: ValueKey(widget.moonPhase),
+      size: Size.infinite,
+    );
+  }
+}
+
+class MoonPhaseCustomPaint extends CustomPainter {
+  final double moonPhase;
+  final double fraction;
+  MoonPhaseCustomPaint({required this.moonPhase, required this.fraction});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 6;
+
+    final basePaint = Paint()..color = Colors.grey[400]!;
+    canvas.drawCircle(center, radius, basePaint);
+
+    final illuminatedPaint = Paint()..color = Colors.yellow[200]!;
+    final shadowPaint = Paint()..color = Colors.grey[800]!;
+
+    final Path clipPath = Path();
+    if (moonPhase <= 0.5) {
+      clipPath.addOval(
+        Rect.fromCircle(
+          center: center + Offset(radius * (1 - 2 * moonPhase), 0),
+          radius: radius,
+        ),
+      );
+    } else {
+      clipPath.addOval(
+        Rect.fromCircle(
+          center: center - Offset(radius * (2 * moonPhase - 1), 0),
+          radius: radius,
+        ),
+      );
+    }
+
+    canvas.save();
+    canvas.clipPath(clipPath);
+    canvas.drawCircle(center, radius, illuminatedPaint);
+    canvas.restore();
+
+    int craters = 8;
+    final moonRadius = radius * 0.9;
+    Random random = Random(123);
+
+    for (int i = 0; i < craters; i++) {
+      final craterPaint = Paint()
+        ..color = const Color.fromARGB(54, 117, 117, 117);
+      final craterRadius =
+          random.nextDouble() * (radius / 8) +
+          (radius / 16); // Tamaño aleatorio entre 1/16 y 1/8
+
+      final angle = random.nextDouble() * 2 * pi; // Ángulo
+      final distanceFromCenter =
+          random.nextDouble() * (moonRadius - craterRadius) +
+          11; // Distancia desde el centro
+
+      final craterX = center.dx + distanceFromCenter * cos(angle);
+      final craterY = center.dy + distanceFromCenter * sin(angle);
+
+      if ((Offset(craterX, craterY) - center).distance <=
+          (moonRadius - craterRadius)) {
+        canvas.drawCircle(Offset(craterX, craterY), craterRadius, craterPaint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(MoonPhaseCustomPaint oldDelegate) {
+    return oldDelegate.moonPhase != moonPhase ||
+        oldDelegate.fraction != fraction;
+  }
+}
+
 class SunPath extends StatefulWidget {
   const SunPath({super.key, required this.dayProgress});
   final double dayProgress;
@@ -4187,9 +4470,10 @@ class SunPathPainter extends CustomPainter {
 
     //Calcular la curva
     final p0 = Offset(0, size.height);
+    final desiredHeightRatio = 1.3;
     final p1 = Offset(
       size.width / 2,
-      size.height * 0.3,
+      size.height * (1 - desiredHeightRatio),
     ); // control point (más bajo que 0)
     final p2 = Offset(size.width, size.height);
 

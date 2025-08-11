@@ -17,6 +17,7 @@ import 'package:weather_icons/weather_icons.dart';
 import 'package:retry/retry.dart';
 import 'package:location/location.dart' as loc;
 import 'package:zeroweather/main.dart';
+import 'package:apsl_sun_calc/apsl_sun_calc.dart';
 
 class Station {
   final String code;
@@ -81,8 +82,10 @@ class WeatherService with ChangeNotifier {
 
   var siteName = "";
   var country = "";
-  var _currentPosition = {};
+  Map<String, dynamic>? _currentPosition;
   Map<dynamic, dynamic>? _lastPosition;
+
+  Map<String, dynamic>? moonCachedData;
 
   Map<String, dynamic>? decodeJson(String jsonString) {
     return jsonDecode(jsonString) as Map<String, dynamic>?;
@@ -125,8 +128,8 @@ class WeatherService with ChangeNotifier {
     String currentCountry = "";
 
     Map? position =
-        _currentPosition["latitude"] != null &&
-            _currentPosition["longitude"] != null
+        _currentPosition?["latitude"] != null &&
+            _currentPosition?["longitude"] != null
         ? _currentPosition
         : (_lastPosition?["latitude"] != null &&
                   _lastPosition?["longitude"] != null
@@ -183,7 +186,7 @@ class WeatherService with ChangeNotifier {
     return {"siteName": safeSiteName, "country": currentCountry};
   }
 
-  Future<Map> NewUpdateSiteName(double latitude, double longitude) async {
+  Future<Map> newUpdateSiteName(double latitude, double longitude) async {
     String safeSiteName = "Ubicación desconocida.";
     String currentCountry = "";
 
@@ -262,6 +265,7 @@ class WeatherService with ChangeNotifier {
         currentPosition = {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
+          "altitude": newPosition.altitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
           "siteName": placemarks["siteName"],
           "country": placemarks["country"],
@@ -279,7 +283,7 @@ class WeatherService with ChangeNotifier {
       country = currentPosition["country"];
 
       debugPrint(
-        "${_currentPosition["latitude"]}, ${_currentPosition["longitude"]}",
+        "${_currentPosition?["latitude"]}, ${_currentPosition?["longitude"]}",
       );
     } catch (e) {
       debugPrint("Error al obtener la ubicación: $e");
@@ -321,7 +325,7 @@ class WeatherService with ChangeNotifier {
           Duration(seconds: 30),
         );
 
-        final placemarks = await NewUpdateSiteName(
+        final placemarks = await newUpdateSiteName(
           newPosition.latitude ?? 0.0,
           newPosition.longitude ?? 0.0,
         );
@@ -329,6 +333,7 @@ class WeatherService with ChangeNotifier {
         currentPosition = {
           "latitude": newPosition.latitude,
           "longitude": newPosition.longitude,
+          "altitude": newPosition.altitude,
           "timeStamp": DateTime.now().millisecondsSinceEpoch,
           "siteName": placemarks["siteName"],
           "country": placemarks["country"],
@@ -344,7 +349,7 @@ class WeatherService with ChangeNotifier {
       country = currentPosition["country"] ?? "Desconocido";
 
       debugPrint(
-        "${_currentPosition["latitude"]}, ${_currentPosition["longitude"]}",
+        "${_currentPosition?["latitude"]}, ${_currentPosition?["longitude"]}",
       );
     } catch (e) {
       debugPrint("Error al obtener la ubicación: $e");
@@ -395,7 +400,7 @@ class WeatherService with ChangeNotifier {
             timeLimit: Duration(seconds: 30),
           );
 
-          final placemarks = await NewUpdateSiteName(
+          final placemarks = await newUpdateSiteName(
             newPosition.latitude,
             newPosition.longitude,
           );
@@ -428,8 +433,8 @@ class WeatherService with ChangeNotifier {
     if (freshPositionData != null) {
       _currentPosition = freshPositionData;
 
-      var lat = _currentPosition["latitude"] ?? _lastPosition?["latitude"];
-      var long = _currentPosition["longitude"] ?? _lastPosition?["longitude"];
+      var lat = _currentPosition?["latitude"] ?? _lastPosition?["latitude"];
+      var long = _currentPosition?["longitude"] ?? _lastPosition?["longitude"];
 
       debugPrint("Usando currentPosition: $lat, $long");
     }
@@ -448,8 +453,8 @@ class WeatherService with ChangeNotifier {
     // Ordenar estaciones por distancia
     List<Map<String, dynamic>> stationsWithDistance = _stations.map((station) {
       double distance = Geolocator.distanceBetween(
-        _currentPosition["latitude"] ?? 0.0,
-        _currentPosition["longitude"] ?? 0.0,
+        _currentPosition?["latitude"] ?? 0.0,
+        _currentPosition?["longitude"] ?? 0.0,
         station.latitude,
         station.longitude,
       );
@@ -475,8 +480,8 @@ class WeatherService with ChangeNotifier {
 
   bool hasMovedSignificantly() {
     // Extraer las latitudes y longitudes de los mapas
-    final double currentLat = _currentPosition["latitude"] as double;
-    final double currentLon = _currentPosition["longitude"] as double;
+    final double currentLat = _currentPosition?["latitude"] as double;
+    final double currentLon = _currentPosition?["longitude"] as double;
     final double lastLat = _lastPosition?["latitude"] as double;
     final double lastLon = _lastPosition?["longitude"] as double;
 
@@ -560,7 +565,7 @@ class WeatherService with ChangeNotifier {
 
             meteoFuture = client.get(
               Uri.parse(
-                "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code&timezone=${_lastPosition?["timezone"]}",
+                "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition?["latitude"]}&longitude=${_currentPosition?["longitude"]}&current=is_day,precipitation,showers,snowfall,wind_gusts_10m,pressure_msl,cloud_cover,weather_code&timezone=${_lastPosition?["timezone"]}",
               ),
             );
 
@@ -836,13 +841,13 @@ class WeatherService with ChangeNotifier {
           Future<http.Response> forecastDailyFuture;
           forecastHourlyFuture = client.get(
             Uri.parse(
-              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&hourly=temperature_2m,precipitation_probability,rain,snowfall,showers,uv_index,weather_code&timezone=${_lastPosition?["timezone"]}",
+              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition?["latitude"]}&longitude=${_currentPosition?["longitude"]}&hourly=temperature_2m,precipitation_probability,rain,snowfall,showers,uv_index,weather_code&timezone=${_lastPosition?["timezone"]}",
             ),
           );
 
           forecastDailyFuture = client.get(
             Uri.parse(
-              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&daily=sunrise,sunset,daylight_duration&timezone=${_lastPosition?["timezone"]}",
+              "https://api.open-meteo.com/v1/forecast?latitude=${_currentPosition?["latitude"]}&longitude=${_currentPosition?["longitude"]}&daily=sunrise,sunset,daylight_duration&timezone=${_lastPosition?["timezone"]}",
             ),
           );
 
@@ -1382,7 +1387,7 @@ class WeatherService with ChangeNotifier {
       try {
         icaResponse = await http.get(
           Uri.parse(
-            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${_currentPosition["latitude"]}&longitude=${_currentPosition["longitude"]}&current=pm2_5,carbon_monoxide,sulphur_dioxide,ozone,nitrogen_dioxide,pm10",
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${_currentPosition?["latitude"]}&longitude=${_currentPosition?["longitude"]}&current=pm2_5,carbon_monoxide,sulphur_dioxide,ozone,nitrogen_dioxide,pm10",
           ),
         );
 
@@ -1431,6 +1436,130 @@ class WeatherService with ChangeNotifier {
 
     icaCache = dataToUse;
     notifyListeners();
+  }
+
+  Map<String, dynamic> moonData(double p) {
+    if (p < 0.0625 || p >= 0.9375) return {"nombre": "Luna Nueva"};
+    if (p < 0.1875) return {"nombre": "Luna creciente"};
+    if (p < 0.3125) return {"nombre": "Cuarto creciente"};
+    if (p < 0.4375) return {"nombre": "Gibosa creciente"};
+    if (p < 0.5625) return {"nombre": "Luna llena"};
+    if (p < 0.6875) return {"nombre": "Gibosa menguante"};
+    if (p < 0.8125) return {"nombre": "Cuarto menguante"};
+    return {"nombre": "Luna menguante"};
+  }
+
+  Future<void> getLunarPhase() async {
+    final startTime = DateTime.now();
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = "moon_data";
+    final moonDataCached = prefs.getString(cacheKey);
+    Map<String, dynamic>? dataToUse;
+    debugPrint("MoonData Iniciado");
+
+    if (moonDataCached != null) {
+      final data = decodeJson(moonDataCached);
+
+      debugPrint("Usando moonCachedData");
+      dataToUse = data;
+      moonCachedData = dataToUse;
+      notifyListeners();
+    }
+
+    () async {
+      final timeStamp = dataToUse?["timeStamp"] ?? 0;
+      if (dataToUse == null ||
+          hasMovedSignificantly() ||
+          DateTime.now().millisecondsSinceEpoch - timeStamp > 2 * 60 * 1000) {
+        const List<Map<String, dynamic>> referenceFullMoon = [
+          {"date": "2025-01-13T22:27:00Z", "isFullMoon": true},
+          {"date": "2025-02-12T13:53:00Z", "isFullMoon": true},
+          {"date": "2025-03-14T07:55:00Z", "isFullMoon": true},
+        ];
+
+        const double synodic = 29.530588853;
+
+        if (_currentPosition == null || _currentPosition!.isEmpty) {
+          await getPosition();
+        }
+
+        final double latitude = _currentPosition?["latitude"];
+        final double longitude = _currentPosition?["longitude"];
+        //final double altitude = _currentPosition?["altitude"];
+
+        final DateTime now = DateTime.now().toUtc();
+
+        //se calcula cual es la fecha más cercana a la actual
+        DateTime closestDate = DateTime.parse(
+          referenceFullMoon[0]["date"],
+        ).toUtc();
+        Duration minDiff = now.difference(closestDate).abs();
+
+        for (var ref in referenceFullMoon) {
+          final DateTime refDate = DateTime.parse(ref["date"]).toUtc();
+          final Duration diff = now.difference(refDate).abs();
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestDate = refDate;
+          }
+        }
+
+        //iluminación: fraccion, fase (0..1), angulo
+        final ill = SunCalc.getMoonIllumination(now);
+        final double phaseVal = (ill["phase"])?.toDouble() ?? 0.0;
+        final double fraction = (ill["fraction"])?.toDouble() ?? 0.0;
+        final double angle = (ill["angle"])?.toDouble() ?? 0.0;
+
+        //Tiempos: "rise", "set", timezone
+        final times = SunCalc.getMoonTimes(now, latitude, longitude);
+        DateTime? rise = times["rise"] as DateTime?;
+        DateTime? set = times["set"] as DateTime?;
+
+        final Duration diff = now.difference(closestDate);
+        double ageDays =
+            diff.inMilliseconds / (1000.0 * 60 * 60 * 24.0) % synodic;
+        if (ageDays < 0) {
+          ageDays += synodic;
+        }
+
+        final phaseName = moonData(phaseVal)["nombre"];
+
+        rise = rise?.toLocal();
+        set = set?.toLocal();
+
+        dataToUse = {
+          "date": now.toIso8601String(),
+          "coords": {"latitude": latitude, "longitude": longitude},
+          "illumination": {
+            "fraction": fraction,
+            "phase":
+                phaseVal, //0..1 (0=luna nueva, 0.5=luna llena, 1=menguante)
+            "phaseName": phaseName,
+            "angle": angle,
+            "ageDays": double.parse(ageDays.toStringAsFixed(2)),
+          }, //0..1 iluminación
+          "times": {
+            "rise": rise?.toIso8601String(),
+            "set": set?.toIso8601String(),
+            "alwaysUp": times["alwaysUp"] ?? false,
+            "alwaysDown": times["alwaysDown"] ?? false,
+          },
+          "timeStamp": DateTime.now().millisecondsSinceEpoch,
+        };
+
+        //Guardar caché
+        final success = await prefs.setString(cacheKey, json.encode(dataToUse));
+        debugPrint("¿Guardado MoonData en caché?: $success");
+        if (moonCachedData == null ||
+            moonCachedData!["timeStamp"] != dataToUse?["timeStamp"]) {
+          moonCachedData = dataToUse;
+          notifyListeners();
+        }
+      }
+      debugPrint(
+        "Tiempo total MOONDATA: ${DateTime.now().difference(startTime).inMilliseconds}ms",
+      );
+    }();
   }
 }
 

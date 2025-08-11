@@ -59,6 +59,7 @@ dependencies:
   url_launcher: ^6.1.5
   smooth_page_indicator: ^1.1.0
   nominatim_flutter: ^0.0.7
+  apsl_sun_calc: ^0.0.4
 
 
 flutter_launcher_icons:
